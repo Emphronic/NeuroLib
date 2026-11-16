@@ -1,0 +1,48 @@
+[package]
+name = "neo-snn"
+edition.workspace = true
+version.workspace = true
+description = "Spiking neural network layer for NeuroLib, built on Burn"
+license = "MIT"
+authors = ["Kostyanikov"]
+repository.workspace = true
+
+[lib]
+name = "neo_snn"
+path = "src/lib.rs"
+
+# If NeuroLib is built as a workspace, replace the line below with
+#   burn = { workspace = true }
+# and declare burn once in the root [workspace.dependencies].
+[dependencies]
+burn = { workspace = true, features = ["autodiff"] }
+neo-synk = { version = "0.1.0", path = "../neo-synk" }
+async-channel = "2.5.0"
+rand = "0.8"
+thiserror = "2"
+
+[features]
+default = []
+# Demo training `neo_snn::demo` (requires Burn optimizer). It is launched by the Training tab in
+# neo-gui and example `train_telemetry`.
+demo = ["burn/optim"]
+
+[dev-dependencies]
+# Only flex (CPU) + autodiff: this is enough for examples and tests.
+# Don't add `dataset`/`vision`: they drag down the HTTP/TLS stack and `ring`
+# (C code via MSVC), which is not built for you.
+burn = { workspace = true, features = ["flex", "autodiff", "simd", "rayon","x86-v4"] }
+
+[[example]]
+name = "synthetic_snn"
+path = "examples/synthetic_snn.rs"
+
+[[example]]
+name = "train_telemetry"
+path = "examples/train_telemetry.rs"
+required-features = ["demo"]
+
+[[example]]
+name = "train_fixed_shape"
+path = "examples/train_fixed_shape.rs"
+required-features = ["demo"]

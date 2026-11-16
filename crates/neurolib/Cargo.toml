@@ -1,0 +1,95 @@
+[package]
+name = "neurolib"
+description = "NeuroLib: single entry point to the workspace - spike networks, layers, quantization, kernels, weight format and work with records; everything is enabled via features (analogue of the `burn` crate)"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+authors = ["Kostyanikov"]
+repository.workspace = true
+readme = "README.md"
+publish = true
+
+[lib]
+name = "neurolib"
+path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+features = ["full"]
+
+[features]
+# ── Default: entire ML stack, without GPU and without working with records
+default = ["ml"]
+
+# ── Groups ──────────────────── ───────────────────── ───────────────────── ─────────────────────
+# ML stack: SNN, layers, quantization, kernels, weight format.
+ml = ["snn", "nn", "quant", "kernels", "store"]
+# Working with recordings: buffers/time, formats, viewing, spike curation.
+signal = ["core", "io", "view", "synapse", "zarr", "neuro"]
+# Everything except GPU backends (they are selected separately).
+full = ["ml", "signal", "demo"]
+
+# ── Crates ──────────────────── ───────────────────── ───────────────────── ─────────────────────
+# neo-snn (pulls neo-synk).
+snn = ["dep:neo-snn", "kernels"]
+# neo-nn (pulls neo-synk and neo-quantization).
+nn = ["dep:neo-nn", "kernels", "quant"]
+# neo-quantization.
+quant = ["dep:neo-quantization"]
+# neo-synk: CubeCL cores (GPU enabled by backend features below).
+kernels = ["dep:neo-synk", "quant"]
+# neo-store: `.syn` weight format.
+store = ["dep:neo-store"]
+# neo-core: time, buffers, RecordingSource, windows.
+core = ["dep:neo-core"]
+# neo-io: record formats (raw, .npy/.npz, Zarr by feature `zarr`).
+io = ["dep:neo-io", "core"]
+# neo-view: Envelopes and pyramids for viewing.
+view = ["dep:neo-view", "core"]
+# neo-synapse: spike metrics, snippets, PCA, Phy/Kilosort download.
+synapse = ["dep:neo-synapse", "io", "core"]
+
+# ── Rack options ────────────────────────────────────── ──────────────────────────────────────
+# Zarr-traces and NWB.
+zarr = ["io", "neo-io/zarr"]
+# NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings.
+neuro = ["io", "neo-io/neuro"]
+# Demo training `neo_snn::demo` (needs burn/optim).
+demo = ["snn", "neo-snn/demo"]
+
+# ── Backends burn ────────────────────────────────────── ─────────────────── ────────────────────
+# Burn features that pass through: include burn with this feature across the entire dependency graph.
+# `burn` itself is needed only for them; it is not re-exported from the crate.
+optim = ["burn/optim"]
+train = ["burn/train"]
+dataset = ["burn/dataset"]
+vision = ["burn/vision"]
+# CPU backend burn (convenient for tests and examples).
+flex = ["burn/flex"]
+# Lazy core registration in Fusion.
+fusion = ["kernels", "neo-synk/fusion"]
+
+# ── GPU: one feature includes cores and a computational layer of records
+# The CubeCL backends in burn include Fusion by default, and the neo-synk cores need a feature for it
+# `fusion` (otherwise `Fusion<CubeBackend>` does not implement kernel traits and the build crashes), so
+# each GPU backend pulls `fusion`.
+wgpu = ["kernels", "fusion", "neo-synk/wgpu", "neo-core?/wgpu", "neo-view?/wgpu"]
+cuda = ["kernels", "fusion", "neo-synk/cuda", "neo-core?/cuda", "neo-view?/cuda"]
+rocm = ["kernels", "fusion", "neo-synk/rocm", "neo-core?/hip", "neo-view?/hip"]
+# CPU device CubeCL for neo-core / neo-view (not to be confused with `flex`).
+cubecl-cpu = ["neo-core?/cpu", "neo-view?/cpu"]
+
+[dependencies]
+burn = { workspace = true, optional = true }
+
+neo-core = { version = "0.1.0", path = "../neo-core", optional = true }
+neo-io = { version = "0.1.0", path = "../neo-io", default-features = false, optional = true }
+neo-view = { version = "0.1.0", path = "../neo-view", default-features = false, optional = true }
+neo-synapse = { version = "0.1.0", path = "../neo-synapse", optional = true }
+
+neo-snn = { version = "0.1.0", path = "../neo-snn", optional = true }
+neo-nn = { version = "0.1.0", path = "../neo-nn", optional = true }
+neo-quantization = { version = "0.1.0", path = "../neo-quantization", optional = true }
+neo-synk = { version = "0.1.0", path = "../neo-synk", optional = true }
+neo-store = { version = "0.1.0", path = "../neo-store", optional = true }
+
+[dev-dependencies]

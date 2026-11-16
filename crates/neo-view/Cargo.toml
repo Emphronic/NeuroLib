@@ -1,0 +1,26 @@
+[package]
+name = "neo-view"
+description = "Preparing multi-channel signals for viewing: min/max envelopes and pyramids"
+version.workspace = true
+edition = "2024"
+authors = ["Kostyanikov"]
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = true
+
+[features]
+# Host-only by default: no GPU, no CubeCL.
+default = []
+## Envelopes of samples already on a CubeCL device.
+device = ["dep:cubecl", "neo-core/compute"]
+wgpu = ["device", "neo-core/wgpu"]
+cpu = ["device", "neo-core/cpu"]
+cuda = ["device", "neo-core/cuda"]
+hip = ["device", "neo-core/hip"]
+
+[dependencies]
+neo-core = { version = "0.1.0", path = "../neo-core" }
+cubecl = { version = "0.11.0", default-features = false, features = ["std", "stdlib"], optional = true }
+rayon = "1.12.0"
+memmap2 = "0.9.11"
+tracing = "0.1.44"

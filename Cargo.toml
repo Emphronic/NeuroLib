@@ -1,0 +1,27 @@
+# NeuroLib workspace. Need Rust >= 1.95 (burn 0.22, cubecl 0.11); neo-gui (gpui-kit) — >= 1.93.
+[workspace]
+resolver = "3"
+members = [
+    "crates/neo-core",
+    "crates/neo-io",
+    "crates/neo-view",
+    "crates/neo-synapse",
+    "crates/neo-quantization",
+    "crates/neo-synk",
+    "crates/neo-snn",
+    "crates/neo-nn",
+    "crates/neo-gui",
+    "crates/neo-store",
+    "crates/neurolib",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/Kostyanikov/NeuroLib"
+
+[workspace.dependencies]
+# One version of Burn for the entire workspace. Crates that need backends or extra features
+# (`flex`, `autodiff`, `extension`, ...), add them at home: `burn = { workspace = true, features = [...] }`.
+# Default features of Burn 0.22: `std` and `optim` (without backend); `dataset`/`vision` are not included.
+burn = { version = "0.22.0" }

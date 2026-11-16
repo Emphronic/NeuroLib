@@ -1,0 +1,43 @@
+[package]
+name = "neo-gui"
+description = "NeuroLib workbench (GPUI + gpui-kit): traces, heatmap, channels and a timeline over multi-channel activity; Explore, Curation and Training workspaces"
+version.workspace = true
+edition = "2024"
+authors = ["Kostyanikov"]
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = true
+
+[[bin]]
+name = "neo-gui"
+path = "src/main.rs"
+
+[dependencies]
+neo-core = { version = "0.1.0", path = "../neo-core" }
+# NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings
+neo-io = { version = "0.1.0", path = "../neo-io", features = ["neuro"] }
+# Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
+neo-view = { version = "0.1.0", path = "../neo-view", default-features = false }
+# Curation: spike-train metrics, snippets, PCA, phy folder loading
+neo-synapse = { version = "0.1.0", path = "../neo-synapse" }
+# Training workspace: the telemetry channel (`neo_snn::telemetry`) and the demo training loop that
+# writes to it. The GUI renders the same events as the console examples.
+neo-snn = { version = "0.1.0", path = "../neo-snn", features = ["demo"] }
+# CPU backend (+ autodiff) the demo trains on, in its own thread
+burn = { workspace = true, features = ["flex", "autodiff"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+# Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update deliberately.
+# Needs rustc >= 1.93 (gpui-pre-util uses slice::as_array).
+gpui-kit = "=0.7.0"
+async-channel = "2.5.0"
+
+[dev-dependencies]
+# Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)
+gpui-kit = { version = "=0.7.0", features = ["test-support"] }

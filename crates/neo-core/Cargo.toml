@@ -1,0 +1,25 @@
+[package]
+name = "neo-core"
+description = "Foundational primitives for signal recordings: exact time and sample rates, buffers, errors, the RecordingSource contract, out-of-core window streaming"
+version.workspace = true
+edition = "2024"
+authors = ["Kostyanikov"]
+license = "MIT"
+repository.workspace = true
+publish = true
+
+[features]
+default = []
+# The compute layer (CubeCL); off by default. Not needed for neo-view / neo-io host paths.
+compute = ["dep:cubecl"]
+wgpu = ["compute", "cubecl/wgpu"]
+cpu = ["compute", "cubecl/cpu"]
+cuda = ["compute", "cubecl/cuda"]
+hip = ["compute", "cubecl/hip"]
+
+[dependencies]
+cubecl = { version = "0.11.0", default-features = false, features = ["std", "stdlib"], optional = true }
+num-traits = "0.2.19"
+num-rational = { version = "0.4.2", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"

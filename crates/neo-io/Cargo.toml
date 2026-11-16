@@ -1,0 +1,24 @@
+[package]
+name = "neo-io"
+description = "Recording formats and containers: .npy, .npz, Zarr; with `neuro`: NWB, SpikeGLX, mtscomp, probe geometry, sorting files"
+version.workspace = true
+edition = "2024"
+authors = ["Kostyanikov"]
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = true
+
+[features]
+default = ["zarr"]
+zarr = ["dep:zarrs"]
+# Neural-recording formats (NWB, SpikeGLX, mtscomp), probe geometry, synthetic recordings.
+neuro = []
+
+[dependencies]
+neo-core = { version = "0.1.0", path = "../neo-core" }
+memmap2 = "0.9.11"
+flate2 = "1.1.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tracing = "0.1.44"
+zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"], optional = true }

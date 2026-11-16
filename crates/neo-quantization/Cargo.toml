@@ -1,0 +1,25 @@
+[package]
+name = "neo-quantization"
+description = "Quantization formats for NeuroLib: GGUF Q4_0..Q8_1, K-quants Q2_K..Q8_K, the IQ series, NF4, ternary/TQ and INT1..INT8"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+authors = ["Kostyanikov"]
+repository.workspace = true
+publish = true
+include = [
+    "src/**",
+    "tests/**",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+]
+
+[dependencies]
+burn = { workspace = true }
+rayon = "1"
+
+[dev-dependencies]
+rand = "0.8"
+

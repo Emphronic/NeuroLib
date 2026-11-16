@@ -1,0 +1,58 @@
+[package]
+name = "neo-synk"
+edition.workspace = true
+version.workspace = true
+description = "Fused CubeCL kernels for NeuroLib: quantized GEMM, leaky scan, spike and surrogate operations"
+license = "MIT"
+authors = ["Kostyanikov"]
+repository.workspace = true
+
+[lib]
+name = "neo_synk"
+path = "src/lib.rs"
+
+[dependencies]
+# burn 0.22: `Tensor<D>` is no longer parameterized by the backend, the backend sets
+# `Device` in runtime. Their cores are connected via `#[backend_extension]`
+# (feature burn `extension`); `autodiff` is needed for manual backward.
+burn = { workspace = true, features = ["extension", "autodiff"] }
+
+# CubeCL-kernels (leaky scan, quantized GEMM). Can only be connected with
+# GPU features (`wgpu` / `cuda` / `rocm`): without them, the crate is built as a pure CPU.
+burn-cubecl = { version = "0.22.0", optional = true }
+cubecl = { version = "0.11.0", optional = true }
+
+# Fused quantized GEMM (`quant` module) reads the weight package directly.
+neo-quantization = { version = "0.1.0", path = "../neo-quantization" }
+rayon = "1"
+
+[dev-dependencies]
+burn = { workspace = true, features = ["flex", "autodiff", "extension"] }
+
+[features]
+default = ["flex"]
+# Fused operation “spike + surrogate gradient” for Flex (CPU): `snn::spike`.
+flex = ["burn/flex"]
+# Backend for GPU cores is selected as in Burn. On a machine without GPU for wgpu
+# running software Vulkan (lavapipe):
+#   cargo test -p neo-synk --features wgpu gpu_
+#   cargo test -p neo-synk --features cuda gpu_
+wgpu = ["burn/wgpu", "dep:burn-cubecl", "dep:cubecl", "cubecl/wgpu"]
+cuda = ["burn/cuda", "dep:burn-cubecl", "dep:cubecl", "cubecl/cuda"]
+rocm = ["burn/rocm", "dep:burn-cubecl", "dep:cubecl", "cubecl/hip"]
+# Lazy registration of kernels in Fusion (needed if burn has `fusion` enabled).
+fusion = ["burn/fusion"]
+
+# GPU benchmarks:
+#   cargo run --release -p neo-synk --features wgpu,fusion --example quant_gpu_bench
+#   cargo run --release -p neo-synk --features wgpu,fusion --example leaky_scan_bench
+[[example]]
+name = "quant_gpu_bench"
+path = "examples/quant_gpu_bench.rs"
+required-features = ["wgpu"]
+
+[[example]]
+name = "leaky_scan_bench"
+path = "examples/leaky_scan_bench.rs"
+required-features = ["wgpu"]
+

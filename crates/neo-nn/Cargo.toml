@@ -1,0 +1,24 @@
+[package]
+name        = "neo-nn"
+version.workspace = true
+edition.workspace = true
+description = "Generic neural network layers for NeuroLib: quantized linear, MoE, transformer blocks, embeddings"
+license = "MIT"
+authors = ["Kostyanikov"]
+repository.workspace = true
+
+[lib]
+name = "neo_nn"
+path = "src/lib.rs"
+
+[dependencies]
+burn = { workspace = true }
+thiserror = "2"
+
+# QuantizedLinear: packed weights + fused quantized GEMM.
+neo-quantization = { version = "0.1.0", path = "../neo-quantization" }
+neo-synk = { version = "0.1.0", path = "../neo-synk" }
+
+[dev-dependencies]
+# flex - CPU backend for tests, autodiff - for gradient tests.
+burn = { workspace = true, features = ["flex", "autodiff"] }
