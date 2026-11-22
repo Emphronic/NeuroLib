@@ -26,6 +26,7 @@ use crate::scalar::Scalar;
 
 use super::error::{StructuralError, StructuralResult};
 pub use super::model::{NeuronModel, NeuronPolarity, NeuronRole, NeuronState};
+use super::network::SynapseModel;
 
 static VERSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -233,7 +234,7 @@ impl StructMeta {
 /// polarity - as a sign of the influence of spikes on the receivers. State always
 /// corresponds to the model variant (checked [`Topology::validate`]).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Neuron<T = f32> {
+pub struct Neuron<T: Scalar = f32> {
     /// ID.
     pub id: NeuronId,
     /// Role in the network.
@@ -321,6 +322,12 @@ pub struct Synapse<T = f32> {
     pub weight: T,
     /// Delivery delay in steps (0 - spike arrives at the next step).
     pub delay: u16,
+    /// Transmission model ([`SynapseModel`]) — legacy `CurrentBased` = weight-as-current.
+    pub model: SynapseModel<T>,
+    /// Binary weight flag — the weight is `0` or `±W_max`
+    /// (paper-style binary weights, see arXiv:2610.16022).
+    /// Storage/semantics only: delivery is unchanged — the weight itself is the value.
+    pub binary: bool,
     /// Condition.
     pub state: SynapseState,
     /// Statistics.
@@ -342,7 +349,7 @@ impl<T: Scalar> Synapse<T> {
 
 /// Dynamic network graph.
 #[derive(Debug, Clone)]
-pub struct Topology<T = f32> {
+pub struct Topology<T: Scalar = f32> {
     pub(super) neurons: BTreeMap<NeuronId, Neuron<T>>,
     pub(super) synapses: BTreeMap<SynapseId, Synapse<T>>,
     pub(super) out_adj: BTreeMap<NeuronId, Vec<SynapseId>>,
@@ -639,6 +646,7 @@ impl<T: Scalar> Topology<T> {
         dst: NeuronId,
         weight: T,
         delay: u16,
+        model: SynapseModel<T>,
         birth: Birth,
         origin: Origin,
     ) -> SynapseId {
@@ -652,6 +660,8 @@ impl<T: Scalar> Topology<T> {
                 dst,
                 weight,
                 delay,
+                model,
+                binary: false,
                 state: SynapseState::Active,
                 stats: SynapseStats {
                     trace_step: birth.step,
@@ -799,6 +809,20 @@ impl<T: Scalar> Topology<T> {
                         s.weight
                     ));
                 }
+                // Conductance-based synapses: GABA (inhibitory source) must have E_rev ≤ 0
+                // (reversal potential — never sign flip).
+                if let Some(p) = s.model.params()
+                    && src.polarity == NeuronPolarity::Inhibitory
+                    && p.e_rev > T::ZERO
+                {
+                    return bad(format!(
+                        "{}: Dale's principle is violated: {} neuron {} has E_rev {}",
+                        s.id,
+                        src.polarity.as_str(),
+                        s.src,
+                        p.e_rev
+                    ));
+                }
             }
             if s.delay > self.param_limits.delay_max {
                 return bad(format!(
@@ -868,6 +892,11 @@ impl<T: Scalar> Topology<T> {
         if !self.limits.allow_duplicates {
             let mut seen = std::collections::BTreeSet::new();
             for s in self.synapses.values() {
+                // Conductance-based synapses are allowed as multiedges (each has its
+                // own independent receptor dynamics).
+                if s.model.is_cond() {
+                    continue;
+                }
                 if !seen.insert((s.src, s.dst)) {
                     return bad(format!("duplicate connection {} → {}", s.src, s.dst));
                 }
@@ -901,12 +930,12 @@ impl<T: Scalar> Topology<T> {
             while let Some(n) = ready.pop() {
                 visited += 1;
                 for sid in self.out_synapses(n) {
-                    if let Some(s) = self.synapses.get(sid) {
-                        if let Some(d) = indeg.get_mut(&s.dst) {
-                            *d -= 1;
-                            if *d == 0 {
-                                ready.push(s.dst);
-                            }
+                    if let Some(s) = self.synapses.get(sid)
+                        && let Some(d) = indeg.get_mut(&s.dst)
+                    {
+                        *d -= 1;
+                        if *d == 0 {
+                            ready.push(s.dst);
                         }
                     }
                 }

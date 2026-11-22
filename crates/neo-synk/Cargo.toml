@@ -37,15 +37,17 @@ flex = ["burn/flex"]
 # running software Vulkan (lavapipe):
 #   cargo test -p neo-synk --features wgpu gpu_
 #   cargo test -p neo-synk --features cuda gpu_
-wgpu = ["burn/wgpu", "dep:burn-cubecl", "dep:cubecl", "cubecl/wgpu"]
-cuda = ["burn/cuda", "dep:burn-cubecl", "dep:cubecl", "cubecl/cuda"]
-rocm = ["burn/rocm", "dep:burn-cubecl", "dep:cubecl", "cubecl/hip"]
-# Lazy registration of kernels in Fusion (needed if burn has `fusion` enabled).
+wgpu = ["burn/wgpu", "fusion", "dep:burn-cubecl", "dep:cubecl", "cubecl/wgpu"]
+cuda = ["burn/cuda", "fusion", "dep:burn-cubecl", "dep:cubecl", "cubecl/cuda"]
+rocm = ["burn/rocm", "fusion", "dep:burn-cubecl", "dep:cubecl", "cubecl/hip"]
+# Lazy registration of kernels in Fusion. Burn enables its `fusion` together with any GPU
+# backend, and `Dispatch` then requires the extension traits for `Fusion<..>`, so the GPU
+# features above turn this one on automatically.
 fusion = ["burn/fusion"]
 
 # GPU benchmarks:
-#   cargo run --release -p neo-synk --features wgpu,fusion --example quant_gpu_bench
-#   cargo run --release -p neo-synk --features wgpu,fusion --example leaky_scan_bench
+#   cargo run --release -p neo-synk --features wgpu --example quant_gpu_bench
+#   cargo run --release -p neo-synk --features wgpu --example leaky_scan_bench
 [[example]]
 name = "quant_gpu_bench"
 path = "examples/quant_gpu_bench.rs"
@@ -55,4 +57,5 @@ required-features = ["wgpu"]
 name = "leaky_scan_bench"
 path = "examples/leaky_scan_bench.rs"
 required-features = ["wgpu"]
+
 

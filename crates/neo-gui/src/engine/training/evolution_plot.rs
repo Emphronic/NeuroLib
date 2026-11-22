@@ -132,6 +132,7 @@ pub fn render_evolution(req: &EvolutionRequest) -> (Frame, Vec<CurvePanel>) {
         2.0
     };
 
+    #[allow(clippy::type_complexity)]
     let specs: [(
         &'static str,
         Vec<(&[f32], Pixel, f32, bool)>,
@@ -173,13 +174,13 @@ pub fn render_evolution(req: &EvolutionRequest) -> (Frame, Vec<CurvePanel>) {
         let y1 = y0 + each;
         let (top, bottom) = (y0 * h as f32, y1 * h as f32);
         draw_panel_frame(&mut canvas, p, top, bottom);
-        if i == 0 {
-            if let Some(t) = near_target {
-                let y = map_y(t, lo, hi, false, top, bottom).round().max(0.0) as usize;
-                for x in 0..canvas.width {
-                    if (x / 6) % 2 == 0 {
-                        canvas.blend(x, y, p.text, 0.7);
-                    }
+        if i == 0
+            && let Some(t) = near_target
+        {
+            let y = map_y(t, lo, hi, false, top, bottom).round().max(0.0) as usize;
+            for x in 0..canvas.width {
+                if (x / 6) % 2 == 0 {
+                    canvas.blend(x, y, p.text, 0.7);
                 }
             }
         }

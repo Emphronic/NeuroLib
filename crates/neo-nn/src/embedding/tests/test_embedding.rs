@@ -465,23 +465,9 @@ fn adaptive_dense_and_routed_produce_same_gradients() {
     let g_dense = emb.forward(x.clone()).sum().backward();
     let g_routed = emb.forward_routed(x).sum().backward();
 
-    for k in 0..3 {
-        let a = to_vec(
-            emb.tiers[k]
-                .embedding
-                .weight
-                .val()
-                .grad(&g_dense)
-                .expect("dense"),
-        );
-        let b = to_vec(
-            emb.tiers[k]
-                .embedding
-                .weight
-                .val()
-                .grad(&g_routed)
-                .expect("routed"),
-        );
+    for tier in emb.tiers.iter().take(3) {
+        let a = to_vec(tier.embedding.weight.val().grad(&g_dense).expect("dense"));
+        let b = to_vec(tier.embedding.weight.val().grad(&g_routed).expect("routed"));
         assert_close(&a, &b, 1e-5);
     }
 }

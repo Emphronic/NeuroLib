@@ -68,12 +68,12 @@ pub(crate) fn check_heads(
     if num_kv_heads == 0 {
         return Err("num_kv_heads must be > 0".into());
     }
-    if d_model % num_heads != 0 {
+    if !d_model.is_multiple_of(num_heads) {
         return Err(format!(
             "d_model ({d_model}) must be divisible by num_heads ({num_heads})"
         ));
     }
-    if num_heads % num_kv_heads != 0 {
+    if !num_heads.is_multiple_of(num_kv_heads) {
         return Err(format!(
             "num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
         ));
@@ -100,7 +100,7 @@ pub(crate) fn host_mask(
             });
         }
         assert!(
-            data[before..].iter().any(|v| *v == 0.0),
+            data[before..].contains(&0.0),
             "attention: query row {i} is completely masked"
         );
     }

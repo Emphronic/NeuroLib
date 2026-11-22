@@ -13,7 +13,7 @@
 //! | [`snn`] | `neo-snn` | `snn` |
 //! | [`nn`] | `neo-nn` | `nn` |
 //! | [`quant`] | `neo-quantization` | `quant` |
-//! | [`kernels`] | `neo-synk` | `kernels` |
+//! | [`synk`] | `neo-synk` | `kernels` |
 //! | [`store`] | `neo-store` | `store` |
 //! | [`core`] | `neo-core` | `core` |
 //! | [`io`] | `neo-io` | `io` (`zarr`, `neuro`) |
@@ -22,6 +22,16 @@
 //!
 //! Groups: `ml` (default), `signal`, `full`. GPU: `wgpu`, `cuda`, `rocm`, plus `fusion`.
 //! `neo-gui` is an application, not a library, so it's not here.
+//!
+//! Kernels are reachable from the spiking module, no need to name `neo-synk`:
+//!
+//! ```ignore
+//! use burn::tensor::{Device, Tensor};
+//! use neurolib::snn::leaky_scan_forward;
+//!
+//! let device = Device::wgpu(Default::default());
+//! let u = leaky_scan_forward(input, mem0, beta); // wgpu/CUDA/ROCm: fused CubeCL kernel
+//! ```
 //!
 //! `burn` is not re-exported: declare it separately in the project (`burn = "0.22"`, as in workspace).
 
@@ -35,7 +45,7 @@ pub use neo_nn as nn;
 pub use neo_quantization as quant;
 
 #[cfg(feature = "kernels")]
-pub use neo_synk as kernels;
+pub use neo_synk as synk;
 
 #[cfg(feature = "store")]
 pub use neo_store as store;

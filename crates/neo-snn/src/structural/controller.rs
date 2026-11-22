@@ -115,7 +115,7 @@ pub struct AdaptReport<T = f32> {
 
 /// A snapshot of the best cost-effective topology.
 #[derive(Debug, Clone)]
-pub struct BestSnapshot<T = f32> {
+pub struct BestSnapshot<T: Scalar = f32> {
     /// Topology.
     pub topology: Topology<T>,
     /// Full cost `J` at the time of the photo.
@@ -136,7 +136,7 @@ impl<T: Scalar> PartialEq for BestSnapshot<T> {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Pending<T = f32> {
+pub(super) struct Pending<T: Scalar = f32> {
     pub(super) backup: Topology<T>,
     pub(super) loss_before: T,
     pub(super) cost_before: T,
@@ -145,7 +145,7 @@ pub(super) struct Pending<T = f32> {
 }
 
 /// Controller of structural plasticity.
-pub struct StructuralPlasticityController<T = f32> {
+pub struct StructuralPlasticityController<T: Scalar = f32> {
     pub(super) cfg: StructuralConfig<T>,
     pub(super) rng: Rng64,
     pub(super) log: EventLog,
@@ -171,6 +171,7 @@ impl<T: Scalar> fmt::Debug for StructuralPlasticityController<T> {
     }
 }
 
+#[allow(clippy::type_complexity)]
 /// Measure the quality of a network copy.
 fn measure<T: Scalar>(
     eval: &mut Option<&mut dyn FnMut(&mut DynamicNetwork<T>) -> T>,
@@ -319,6 +320,7 @@ impl<T: Scalar> StructuralPlasticityController<T> {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     /// Analyze the network and change the structure if necessary.
     /// Call on the safe boundary of learning.
     pub fn adapt(
@@ -369,28 +371,28 @@ impl<T: Scalar> StructuralPlasticityController<T> {
         if let Some(p) = self.pending.as_mut() {
             p.calls_left = p.calls_left.saturating_sub(1);
         }
-        if self.pending.as_ref().is_some_and(|p| p.calls_left == 0) {
-            if let Some(p) = self.pending.take() {
-                let now = self.recent_mean(self.cfg.rollback.verify_after_calls as usize);
-                let cost_now = self.cost.cost(now, &report.stats);
-                if self.is_worse(p.loss_before, now, p.cost_before, cost_now) {
-                    net.replace_topology(p.backup);
-                    let kinds: Vec<ActionKind> = p.seqs.iter().map(|s| s.1).collect();
-                    for (seq, kind) in &p.seqs {
-                        self.log.reclassify_rolled_back(*seq, *kind, now.to_f32());
-                    }
-                    self.penalize(&kinds, step);
-                    self.last_change_step = Some(step);
-                    report.rolled_back = true;
-                    report.loss_before = Some(p.loss_before);
-                    report.loss_after = Some(now);
-                    report.skipped = Some(SkipReason::TooSoon);
-                    report.stats = net.stats(silent, over);
-                    return Ok(report);
+        if self.pending.as_ref().is_some_and(|p| p.calls_left == 0)
+            && let Some(p) = self.pending.take()
+        {
+            let now = self.recent_mean(self.cfg.rollback.verify_after_calls as usize);
+            let cost_now = self.cost.cost(now, &report.stats);
+            if self.is_worse(p.loss_before, now, p.cost_before, cost_now) {
+                net.replace_topology(p.backup);
+                let kinds: Vec<ActionKind> = p.seqs.iter().map(|s| s.1).collect();
+                for (seq, kind) in &p.seqs {
+                    self.log.reclassify_rolled_back(*seq, *kind, now.to_f32());
                 }
-                for (_, k) in &p.seqs {
-                    self.streak.insert(*k, 0);
-                }
+                self.penalize(&kinds, step);
+                self.last_change_step = Some(step);
+                report.rolled_back = true;
+                report.loss_before = Some(p.loss_before);
+                report.loss_after = Some(now);
+                report.skipped = Some(SkipReason::TooSoon);
+                report.stats = net.stats(silent, over);
+                return Ok(report);
+            }
+            for (_, k) in &p.seqs {
+                self.streak.insert(*k, 0);
             }
         }
 
@@ -398,15 +400,15 @@ impl<T: Scalar> StructuralPlasticityController<T> {
             report.skipped = Some(SkipReason::Verifying);
             return Ok(report);
         }
-        if self.calls % self.cfg.schedule.analyze_every != 0 {
+        if !self.calls.is_multiple_of(self.cfg.schedule.analyze_every) {
             report.skipped = Some(SkipReason::NotDue);
             return Ok(report);
         }
-        if let Some(l) = self.last_change_step {
-            if step.saturating_sub(l) < self.cfg.schedule.min_interval_steps {
-                report.skipped = Some(SkipReason::TooSoon);
-                return Ok(report);
-            }
+        if let Some(l) = self.last_change_step
+            && step.saturating_sub(l) < self.cfg.schedule.min_interval_steps
+        {
+            report.skipped = Some(SkipReason::TooSoon);
+            return Ok(report);
         }
 
         // Best cost topology.
@@ -461,12 +463,10 @@ impl<T: Scalar> StructuralPlasticityController<T> {
                 && self.since_improvement >= ng.plateau_patience
                 && metrics.task_loss >= ng.min_loss
                 && ng.max_new_per_interval > 0
-            {
-                if let Some(a) =
+                && let Some(a) =
                     propose_grow_neuron(net, ng, &mut self.rng, &skip, self.since_improvement)
-                {
-                    plan.push(a);
-                }
+            {
+                plan.push(a);
             }
         }
         if self.cfg.model_selection.enabled {
@@ -482,25 +482,25 @@ impl<T: Scalar> StructuralPlasticityController<T> {
             };
             plan.extend(switches);
         }
-        if self.cfg.param_learning.enabled {
-            if let Some(f) = eval.as_mut() {
-                // Changing the model and training the parameters of one neuron in one
-                // terms conflict: the parameters refer to the old model.
-                // We leave priority to changing the model, we will study the parameters on
-                // next interval.
-                let switched: BTreeSet<NeuronId> = plan
-                    .iter()
-                    .filter_map(|(a, _)| match a {
-                        StructuralAction::ChangeNeuronModel { id, .. } => Some(*id),
-                        _ => None,
-                    })
-                    .collect();
-                let updates = propose_param_updates(net, &self.cfg.param_learning, &mut **f);
-                plan.extend(updates.into_iter().filter(|(a, _)| match a {
-                    StructuralAction::MutateNeuron { id, .. } => !switched.contains(id),
-                    _ => true,
-                }));
-            }
+        if self.cfg.param_learning.enabled
+            && let Some(f) = eval.as_mut()
+        {
+            // Changing the model and training the parameters of one neuron in one
+            // terms conflict: the parameters refer to the old model.
+            // We leave priority to changing the model, we will study the parameters on
+            // next interval.
+            let switched: BTreeSet<NeuronId> = plan
+                .iter()
+                .filter_map(|(a, _)| match a {
+                    StructuralAction::ChangeNeuronModel { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            let updates = propose_param_updates(net, &self.cfg.param_learning, &mut **f);
+            plan.extend(updates.into_iter().filter(|(a, _)| match a {
+                StructuralAction::MutateNeuron { id, .. } => !switched.contains(id),
+                _ => true,
+            }));
         }
         // Local regulation of inhibitory strength: this is homeostasis of inhibitory
         // synapse magnitudes (signs and structure do not change), so it happens outside
@@ -644,14 +644,14 @@ impl<T: Scalar> StructuralPlasticityController<T> {
         self.last_change_step = Some(step);
         let mut keep = true;
         let mut loss_after = None;
-        if self.cfg.rollback.enabled {
-            if let Some(lb) = loss_before {
-                loss_after = measure(&mut eval, net);
-                if let Some(la) = loss_after {
-                    let stats1 = net.stats(silent, over);
-                    let (jb, ja) = (self.cost.cost(lb, &stats0), self.cost.cost(la, &stats1));
-                    keep = !self.is_worse(lb, la, jb, ja);
-                }
+        if self.cfg.rollback.enabled
+            && let Some(lb) = loss_before
+        {
+            loss_after = measure(&mut eval, net);
+            if let Some(la) = loss_after {
+                let stats1 = net.stats(silent, over);
+                let (jb, ja) = (self.cost.cost(lb, &stats0), self.cost.cost(la, &stats1));
+                keep = !self.is_worse(lb, la, jb, ja);
             }
         }
         report.loss_before = loss_before;

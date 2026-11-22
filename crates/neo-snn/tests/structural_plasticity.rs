@@ -251,7 +251,7 @@ fn checkpoint_restores_structure_and_resumes_identically() {
     for e in 0..3 {
         epoch(&mut net, &mut ctl, e);
     }
-    let bytes = save_checkpoint(&net, &ctl, b"extra-optimizer-state");
+    let bytes = save_checkpoint(&net, &ctl, b"extra-optimizer-state").unwrap();
     let Checkpoint {
         network: mut net2,
         controller: mut ctl2,

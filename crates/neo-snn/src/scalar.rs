@@ -77,6 +77,7 @@ pub trait Scalar:
     fn is_finite(self) -> bool;
 
     /// The smaller of the two (`NaN` is ignored, as with `f32::min`).
+    #[allow(clippy::eq_op)] // `x != x` is the NaN check for a generic float
     fn min(self, other: Self) -> Self {
         if other < self || self != self {
             other
@@ -85,6 +86,7 @@ pub trait Scalar:
         }
     }
     /// The greater of the two (`NaN` is ignored, as with `f32::max`).
+    #[allow(clippy::eq_op)] // `x != x` is the NaN check for a generic float
     fn max(self, other: Self) -> Self {
         if other > self || self != self {
             other
@@ -124,9 +126,11 @@ macro_rules! impl_scalar {
             fn is_finite(self) -> bool {
                 <$t>::is_finite(self)
             }
+            #[allow(clippy::eq_op)] // `x != x` is the NaN check for a generic float
             fn min(self, other: Self) -> Self {
                 <$t>::min(self, other)
             }
+            #[allow(clippy::eq_op)] // `x != x` is the NaN check for a generic float
             fn max(self, other: Self) -> Self {
                 <$t>::max(self, other)
             }

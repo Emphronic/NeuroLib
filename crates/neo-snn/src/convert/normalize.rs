@@ -42,13 +42,13 @@ pub fn activation_scales(net: &AnnNet, calibration: &[Act], mode: NormMode) -> R
     if matches!(mode, NormMode::None) {
         return Ok(vec![1.0; n_relu]);
     }
-    if let NormMode::Percentile(p) = mode {
-        if !(p > 0.0 && p <= 100.0) {
-            return Err(SnnError::InvalidConfig {
-                what: "NormMode::Percentile",
-                reason: format!("percentile must be at (0, 100], obtained {p}"),
-            });
-        }
+    if let NormMode::Percentile(p) = mode
+        && !(p > 0.0 && p <= 100.0)
+    {
+        return Err(SnnError::InvalidConfig {
+            what: "NormMode::Percentile",
+            reason: format!("percentile must be at (0, 100], obtained {p}"),
+        });
     }
     if calibration.is_empty() {
         return Err(SnnError::EmptySequence {

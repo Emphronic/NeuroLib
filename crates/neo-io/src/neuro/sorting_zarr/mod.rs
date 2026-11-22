@@ -130,7 +130,7 @@ impl SortingZarr {
                 .unwrap_or_default(),
             locations: read_optional_array::<f32>(dir, "/spikes/locations")
                 .filter(|a| a.shape.get(1) == Some(&3))
-                .map(|a| a.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+                .map(|a| a.data.as_chunks::<3>().0.to_vec())
                 .unwrap_or_default(),
             templates_std: same_shape("/templates/std"),
             templates_se: same_shape("/templates/se"),

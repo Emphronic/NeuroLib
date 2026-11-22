@@ -112,7 +112,7 @@ impl LayerState {
             bytes: frame.size_bytes(),
             frame,
         };
-        if FRAME_HISTORY > 0 && id % stride.max(1) as u64 == 0 {
+        if FRAME_HISTORY > 0 && id.is_multiple_of(stride.max(1) as u64) {
             self.ring_bytes += stored.bytes;
             self.ring.push_back(stored.clone());
             while self.ring.len() > FRAME_HISTORY
@@ -175,10 +175,10 @@ impl LayerState {
 
     /// One frame back in the history.
     pub fn step_back(&mut self) {
-        if let Some(cur) = self.current_id() {
-            if let Some(prev) = self.ring.iter().rev().find(|e| e.id < cur) {
-                self.view = FrameView::Pinned(prev.id);
-            }
+        if let Some(cur) = self.current_id()
+            && let Some(prev) = self.ring.iter().rev().find(|e| e.id < cur)
+        {
+            self.view = FrameView::Pinned(prev.id);
         }
     }
 
@@ -646,7 +646,7 @@ impl TrainingState {
                     .into_iter()
                     .filter(|f| f.severity != Severity::Ok),
             );
-            out.sort_by(|a, b| b.severity.cmp(&a.severity));
+            out.sort_by_key(|a| std::cmp::Reverse(a.severity));
         }
         out
     }
@@ -680,7 +680,7 @@ impl TrainingState {
             // (A loss that is not a number outranks every other finding of its severity.)
             out.retain(|f| f.severity != Severity::Ok);
             extra.append(&mut out);
-            extra.sort_by(|a, b| b.severity.cmp(&a.severity));
+            extra.sort_by_key(|a| std::cmp::Reverse(a.severity));
             return extra;
         }
         out

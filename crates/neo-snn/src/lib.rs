@@ -58,6 +58,10 @@ pub mod layers;
 pub mod neuron;
 /// The most commonly used types.
 pub mod prelude;
+/// Probabilistic machinery — the stochastic-threshold neuron as a Bayesian model of the
+/// neuron excitability (Rate Estimation, `ThresholdPosterior`), NLL/ECE metrics, and the
+/// controllable RNG source (software model of the paper's hardware randomness).
+pub mod probabilistic;
 /// Quantization of the state of a neuron (QAT for membrane).
 pub mod quant;
 /// Reservoir computing: Liquid State Machine, Echo State Network and ridge-readout.
@@ -84,8 +88,27 @@ pub mod surrogate;
 /// Training telemetry: event channel, spike snapshots, metrics history, network state verdict.
 /// All of this is rendered by the GUI (`neo-gui`, Training tab); there is no terminal or graphics here.
 pub mod telemetry;
+/// Temporal memory pathways: dual fast/slow memory (paper-based).
+pub mod temporal;
 
 pub use error::{Result, SnnError};
+
+// The `neo-synk` kernels are available straight from `neo-snn` (and therefore as `neurolib::snn::...`):
+// users do not need to know which crate holds the implementation, and the `Device` itself picks between
+// the CubeCL kernel (wgpu / CUDA / ROCm) and the reference built from ordinary tensor ops.
+//
+// ```ignore
+// use burn::tensor::{Device, Tensor};
+// use neurolib::snn::leaky_scan_forward;
+//
+// let device = Device::wgpu(Default::default());
+// let u = leaky_scan_forward(input, mem0, beta); // [batch, steps, features]
+// ```
+pub use neo_synk::snn::{leaky_scan_forward, leaky_scan_reference};
+
+/// The other `neo-synk::snn` kernels (for example the fused spike `spike_surrogate` on Flex):
+/// `neo_snn::kernels::...`.
+pub use neo_synk::snn as kernels;
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

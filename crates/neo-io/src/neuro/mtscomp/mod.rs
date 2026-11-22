@@ -195,8 +195,10 @@ impl MtscompRecording {
             )));
         }
         let stored = bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]));
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b));
 
         // To channel-major
         let mut x: Vec<i16> = if self.ch.chunk_order == "F" {
@@ -266,7 +268,12 @@ impl RecordingSource for MtscompRecording {
             );
             for (dst, &ch) in out.chunks_exact_mut(n * 2).zip(channels) {
                 let src = &chunk[ch * ns + src0..ch * ns + src0 + len];
-                for (o, &v) in dst[dst0 * 2..(dst0 + len) * 2].chunks_exact_mut(2).zip(src) {
+                for (o, &v) in dst[dst0 * 2..(dst0 + len) * 2]
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .zip(src)
+                {
                     o.copy_from_slice(&v.to_le_bytes());
                 }
             }

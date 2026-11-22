@@ -17,31 +17,29 @@
 //!
 //! # Format
 //!
-//! `"NSTR"`, version of `u32` (currently [`FORMAT_VERSION`] = 5), payload in
+//! `"NSTR"`, version of `u32` (one common version — [`FORMAT_VERSION`] = 9 for
+//! `f32`, [`FORMAT_VERSION_F64`] = 10 for `f64`), payload in
 //! little-endian, FNV-1a-64 checksum of all preceding bytes.
-//! Version 1 (only LIF, role + `LifParams` + membrane) read and
-//! migrates: the role is preserved, the polarity becomes excitatory, the model -
-//! LIF, state – `LifState`. Version 2 adds model/polarity and
-//! `modulation_decay`; when reading version 2, the input mode is the same
-//! [`InputMode::Spike`], automatic selection
-//! models is turned off. Version 3 saves `InputMode` and settings
-//! `ModelSelectionConfig`. Version 4 adds model selection loss evaluation fields
-//! (`loss_evaluation`, `loss_min_improvement`, `max_probes_per_interval`) and
-//! [`ParamLearningConfig`]; version 3 reads with learning settings
-//! default settings (off). Version 5 adds Dale's principle
-//! (`TopologyLimits::enforce_dale`), moving averages of excitatory and
-//! inhibitory input current of neurons, `InhibitoryPlasticityConfig` and
-//! `EiBalanceConfig`; versions 1–4 are read in legacy mode with free
-//! weight signs (`enforce_dale = false`) and zero E/I statistics -
-//! You can enable the Dale principle for such a network via
-//! `Topology::set_enforce_dale(true)`.
-//! Version 6 ([`FORMAT_VERSION_F64`]) is written for networks on `f64`: after version
-//! there is a value width byte (8), all real values occupy 8 bytes.
-//! For `f32` version 5 is still written, so `f32` files are readable by the old one
-//! code. You can read into any scalar: `load_checkpoint` (in `f32`) and
+//!
+//! One common checkpoint for all networks (the newest format; older versions
+//! are not readable — files produced before the consolidation are rejected
+//! with a clear error):
+//!
+//! - `w_topology` — topology limits, neuron fields (role, polarity,
+//!   [`NeuronModel`], [`NeuronState`], stats), synapse fields (endpoints,
+//!   weight, delay, state, stats, eligibility) + transmission model
+//!   [`SynapseModel`] and binary flags (`Synapse::binary`);
+//! - `w_config` — controller config (schedule, growth, pruning, homeostasis,
+//!   rollback, costs, model selection, param learning);
+//! - `w_network` — engine config (STDP, E/I balance, ...), engine state
+//!   (step/sample), spike history, tracker, [`StpConfig`]+states,
+//!   conductance [`CondState`]s, learnable-delay [`LearnableDelayConfig`] +
+//!   [`TrainableDelayState`]s;
+//! - `w_controller` — controller state.
+//!
+//! You can read into any scalar: `load_checkpoint` (in `f32`) and
 //! `load_checkpoint_as::<T>`; `f32 → f64` without loss, `f64 → f32` with rounding.
-//! The newer version file is rejected with an understandable error; data corruption
-//! is caught by the checksum, and the restored topology passes
+//! Data corruption is caught by the checksum, and the restored topology passes
 //! `Topology::validate`.
 //!
 //! Custom `StructureCost` (`with_cost`) not serializing: after
@@ -56,6 +54,7 @@ use crate::scalar::Scalar;
 use crate::state::ResetMode;
 
 use super::controller::{BestSnapshot, Pending, StructuralPlasticityController};
+use super::custom::{CustomNeuronRegistry, CustomStateEntryBox};
 use super::error::{StructuralError, StructuralResult};
 use super::model::{
     AdExParams, AdExState, AdaptiveLifParams, AdaptiveLifState, HodgkinHuxleyParams,
@@ -64,9 +63,11 @@ use super::model::{
 };
 use super::model_selection::{ModelCandidate, ModelSelectionConfig};
 use super::mutation::{ActionKind, EventLog, Outcome, OutcomeCounts, StructuralEvent};
+use super::network::CondState;
 use super::network::{
-    DynamicNetwork, EiBalanceConfig, EngineConfig, InhibitoryPlasticityConfig, InputMode,
-    PlasticityMode, StdpConfig,
+    ConductanceParams, DynamicNetwork, EiBalanceConfig, EngineConfig, InhibitoryPlasticityConfig,
+    InputMode, LearnableDelayConfig, PlasticityMode, StdpConfig, StpConfig, StpMode, StpState,
+    SynapseModel, TrainableDelayState,
 };
 use super::neuron_ops::SplitInit;
 use super::param_learning::ParamLearningConfig;
@@ -78,11 +79,14 @@ use super::topology::{
     SynapseState, SynapseStats, Topology, TopologyLimits,
 };
 
-/// Current format version.
-pub const FORMAT_VERSION: u32 = 5;
+/// Current format version (adds short-term plasticity — `StpConfig` + `StpState` in the
+/// network block; conductance synapses — `SynapseModel` in the topology block; learnable
+/// delays — `LearnableDelayConfig` + `TrainableDelayState`; and synapse binary flags —
+/// `Synapse.binary`).
+pub const FORMAT_VERSION: u32 = 9;
 /// Real value version of the format in `f64` (written for `T = f64`).
 /// After the version there is a byte of the width of the value (now always 8).
-pub const FORMAT_VERSION_F64: u32 = 6;
+pub const FORMAT_VERSION_F64: u32 = 10;
 const MAGIC: &[u8; 4] = b"NSTR";
 
 /// Restored condition.
@@ -97,15 +101,14 @@ pub struct Checkpoint<T: Scalar = f32> {
 }
 
 impl<T: Scalar> Checkpoint<T> {
-    /// Convert the loaded legacy network (versions 1–4 are read with free
-    /// weight signs) into E/I mode: the signs of all weights are adjusted to the polarity of the
-    /// source (the magnitude is preserved) on the network, in controller rollback snapshots
-    /// and in its configuration. Returns the number of synapses changed; repeated
-    /// the call returns `0`.
+    /// Convert the network to E/I mode: the signs of all weights are adjusted
+    /// to the polarity of the source (the magnitude is preserved) on the
+    /// network, in controller rollback snapshots and in its configuration.
+    /// Returns the number of synapses changed; a repeated call returns `0`.
     ///
-    /// Attention: the legacy synapse has an “excitatory source with a negative
-    /// weight" the meaning changes to excitatory - neurons that should
-    /// slow down, you need to do `NeuronPolarity::Inhibitory` in advance.
+    /// Attention: a synapse on a neuron without an explicit polarity gets
+    /// the excitatory polarity — neurons that should slow down need
+    /// `NeuronPolarity::Inhibitory` in advance.
     pub fn enable_dale(&mut self) -> usize {
         let mut changed = self.network.topology_mut().set_enforce_dale(true);
         changed += self.controller.enable_dale();
@@ -122,8 +125,8 @@ fn fnv1a(data: &[u8]) -> u64 {
     h
 }
 
-/// Writer; `wide` — width of real values (`false`: f32, versions 1–5;
-/// `true`: f64, version 6).
+/// Writer; `wide` — width of real values (`false`: f32 [`FORMAT_VERSION`],
+/// `true`: f64 [`FORMAT_VERSION_F64`]).
 struct W(Vec<u8>, bool);
 
 impl W {
@@ -299,7 +302,17 @@ fn r_lif<T: Scalar>(r: &mut R) -> Res<LifParams<T>> {
     })
 }
 
-fn w_model<T: Scalar>(w: &mut W, m: &NeuronModel<T>) {
+/// Custom model tag in the checkpoint format.
+const CUSTOM_MODEL_TAG: u8 = 5;
+
+fn w_model<T: Scalar>(w: &mut W, m: &NeuronModel<T>) -> StructuralResult<()> {
+    if let NeuronModel::Custom(cm) = m {
+        w.u8(CUSTOM_MODEL_TAG);
+        w.str(cm.model_id());
+        w.u32(cm.schema_version());
+        w.bytes(&cm.encode_config()?);
+        return Ok(());
+    }
     w.u8(m.tag());
     match m {
         NeuronModel::Lif(p) => w_lif(w, p),
@@ -344,11 +357,14 @@ fn w_model<T: Scalar>(w: &mut W, m: &NeuronModel<T>) {
             }
             w.usize(p.substeps);
         }
+        NeuronModel::Custom(_) => unreachable!(),
     }
+    Ok(())
 }
 
-fn r_model<T: Scalar>(r: &mut R) -> Res<NeuronModel<T>> {
-    Ok(match r.u8()? {
+fn r_model<T: Scalar>(r: &mut R, registry: &CustomNeuronRegistry<T>) -> Res<NeuronModel<T>> {
+    let tag = r.u8()?;
+    Ok(match tag {
         0 => NeuronModel::Lif(r_lif(r)?),
         1 => NeuronModel::AdaptiveLif(AdaptiveLifParams {
             beta: r.f32()?,
@@ -393,11 +409,38 @@ fn r_model<T: Scalar>(r: &mut R) -> Res<NeuronModel<T>> {
             dt: r.f32()?,
             substeps: r.usize()?,
         }),
+        CUSTOM_MODEL_TAG => {
+            let id = r.str()?;
+            let version = r.u32()?;
+            let bytes = r.bytes()?;
+            let (instance, _state) = registry.create(&id, version, &bytes, &[])?;
+            NeuronModel::Custom(instance)
+        }
         v => return Err(err(format!("unknown neuron model {v}"))),
     })
 }
 
-fn w_state<T: Scalar>(w: &mut W, s: &NeuronState<T>) {
+fn w_state<T: Scalar>(w: &mut W, m: &NeuronModel<T>, s: &NeuronState<T>) -> StructuralResult<()> {
+    if let (NeuronModel::Custom(cm), NeuronState::Custom(entry)) = (m, s) {
+        if entry.inner().model_id() != cm.model_id()
+            || entry.inner().schema_version() != cm.schema_version()
+        {
+            return Err(StructuralError::IncompatibleCustomState(
+                cm.model_id().to_string(),
+            ));
+        }
+        w.u8(CUSTOM_MODEL_TAG);
+        w.str(cm.model_id());
+        w.u32(cm.schema_version());
+        w.bytes(&cm.encode_config()?);
+        w.bytes(&cm.adapter.encode_state(entry.inner())?);
+        return Ok(());
+    }
+    if let NeuronState::Custom(_) = s {
+        return Err(StructuralError::IncompatibleCustomState(
+            "custom state without custom model".into(),
+        ));
+    }
     w.u8(s.tag());
     match s {
         NeuronState::Lif(s) => w.f32(s.mem),
@@ -420,11 +463,24 @@ fn w_state<T: Scalar>(w: &mut W, s: &NeuronState<T>) {
             w.f32(s.n);
             w.bool(s.above);
         }
+        NeuronState::Custom(_) => unreachable!(),
     }
+    Ok(())
 }
 
-fn r_state<T: Scalar>(r: &mut R) -> Res<NeuronState<T>> {
-    Ok(match r.u8()? {
+fn r_state<T: Scalar>(r: &mut R, registry: &CustomNeuronRegistry<T>) -> Res<NeuronState<T>> {
+    let tag = r.u8()?;
+    if tag == CUSTOM_MODEL_TAG {
+        let id = r.str()?;
+        let version = r.u32()?;
+        let cfg = r.bytes()?;
+        let state_bytes = r.bytes()?;
+        let (_instance, state) = registry.create(&id, version, &cfg, &state_bytes)?;
+        return Ok(NeuronState::Custom(CustomStateEntryBox::from_boxed(
+            state.ok_or_else(|| err(format!("custom model \"{id}\": no state was saved")))?,
+        )));
+    }
+    Ok(match tag {
         0 => NeuronState::Lif(LifState { mem: r.f32()? }),
         1 => NeuronState::AdaptiveLif(AdaptiveLifState {
             mem: r.f32()?,
@@ -483,7 +539,7 @@ fn r_meta(r: &mut R) -> Res<StructMeta> {
 
 // ---------------- configuration ----------------
 
-fn w_config<T: Scalar>(w: &mut W, c: &StructuralConfig<T>, version: u32) {
+fn w_config<T: Scalar>(w: &mut W, c: &StructuralConfig<T>) -> StructuralResult<()> {
     let t = &c.topology;
     w.usize(t.max_neurons);
     w.usize(t.max_synapses);
@@ -492,9 +548,7 @@ fn w_config<T: Scalar>(w: &mut W, c: &StructuralConfig<T>, version: u32) {
     w.bool(t.allow_self_loops);
     w.bool(t.allow_recurrent);
     w.bool(t.allow_duplicates);
-    if version >= 5 {
-        w.bool(t.enforce_dale);
-    }
+    w.bool(t.enforce_dale);
     w_param_limits(w, &c.params);
     w.u64(c.schedule.analyze_every);
     w.u64(c.schedule.min_interval_steps);
@@ -529,6 +583,7 @@ fn w_config<T: Scalar>(w: &mut W, c: &StructuralConfig<T>, version: u32) {
     }
     w_lif(w, &n.new_neuron_params);
     w.usize(n.new_neuron_fan);
+    // note: `new_neuron_model` (v2) written below
     w.f32(n.new_neuron_weight);
     w.f32(n.clone_jitter);
     w.f32(n.split.relay_beta);
@@ -576,46 +631,40 @@ fn w_config<T: Scalar>(w: &mut W, c: &StructuralConfig<T>, version: u32) {
     w.u64(c.seed);
     w.usize(c.log_capacity);
     w.usize(c.loss_window);
-    // Version 2: model and polarity of new neurons.
-    if version >= 2 {
-        w.bool(n.new_neuron_model.is_some());
-        if let Some(m) = &n.new_neuron_model {
-            w_model(w, m);
-        }
-        w.u8(n.new_neuron_polarity.code());
+    // New neurons: model and polarity.
+    w.bool(n.new_neuron_model.is_some());
+    if let Some(m) = &n.new_neuron_model {
+        w_model(w, m)?;
     }
-    // Version 3: automatic model selection.
-    if version >= 3 {
-        w_model_selection(w, &c.model_selection, version);
-    }
-    // Version 4: training the physical parameters of neurons.
-    if version >= 4 {
-        w_param_learning(w, &c.param_learning);
-    }
+    w.u8(n.new_neuron_polarity.code());
+    // Automatic model selection.
+    w_model_selection(w, &c.model_selection)?;
+    // Training the physical parameters of neurons.
+    w_param_learning(w, &c.param_learning);
+    Ok(())
 }
 
-fn w_model_selection<T: Scalar>(w: &mut W, m: &ModelSelectionConfig<T>, version: u32) {
+fn w_model_selection<T: Scalar>(w: &mut W, m: &ModelSelectionConfig<T>) -> StructuralResult<()> {
     w.bool(m.enabled);
     w.u64(m.min_observed_steps);
     w.usize(m.max_switches_per_interval);
     w.f32(m.min_improvement);
     w.f32(m.efficiency_weight);
     w.f32(m.specialization_weight);
-    if version >= 4 {
-        w.bool(m.loss_evaluation);
-        w.f32(m.loss_min_improvement);
-        w.usize(m.max_probes_per_interval);
-    }
+    w.bool(m.loss_evaluation);
+    w.f32(m.loss_min_improvement);
+    w.usize(m.max_probes_per_interval);
     w.u8(m.migration.code());
     w.bool(m.include_inputs);
     w.bool(m.include_outputs);
     w.usize(m.candidates.len());
     for c in &m.candidates {
-        w_model(w, &c.model);
+        w_model(w, &c.model)?;
         w.f32(c.cost);
         w.opt_f32(c.target_rate);
         w.f32(c.rate_tolerance);
     }
+    Ok(())
 }
 
 fn w_param_learning<T: Scalar>(w: &mut W, p: &ParamLearningConfig<T>) {
@@ -652,7 +701,7 @@ fn r_param_limits<T: Scalar>(r: &mut R) -> Res<ParamLimits<T>> {
 }
 
 #[allow(clippy::field_reassign_with_default)]
-fn r_config<T: Scalar>(r: &mut R, version: u32) -> Res<StructuralConfig<T>> {
+fn r_config<T: Scalar>(r: &mut R, registry: &CustomNeuronRegistry<T>) -> Res<StructuralConfig<T>> {
     let mut c = StructuralConfig::default();
     c.topology = TopologyLimits {
         max_neurons: r.usize()?,
@@ -662,7 +711,7 @@ fn r_config<T: Scalar>(r: &mut R, version: u32) -> Res<StructuralConfig<T>> {
         allow_self_loops: r.bool()?,
         allow_recurrent: r.bool()?,
         allow_duplicates: r.bool()?,
-        enforce_dale: if version >= 5 { r.bool()? } else { false },
+        enforce_dale: r.bool()?,
     };
     c.params = r_param_limits(r)?;
     c.schedule.analyze_every = r.u64()?;
@@ -752,21 +801,26 @@ fn r_config<T: Scalar>(r: &mut R, version: u32) -> Res<StructuralConfig<T>> {
     c.seed = r.u64()?;
     c.log_capacity = r.usize()?;
     c.loss_window = r.usize()?;
-    if version >= 2 {
-        let n = &mut c.growth.neurons;
-        n.new_neuron_model = if r.bool()? { Some(r_model(r)?) } else { None };
-        n.new_neuron_polarity = r_polarity(r)?;
-    }
-    if version >= 3 {
-        c.model_selection = r_model_selection(r, version)?;
-    }
-    if version >= 4 {
-        c.param_learning = r_param_learning(r)?;
-    }
+    // New neurons: model and polarity.
+    let n = &mut c.growth.neurons;
+    n.new_neuron_model = if r.bool()? {
+        Some(r_model(r, registry)?)
+    } else {
+        None
+    };
+    n.new_neuron_polarity = r_polarity(r)?;
+    // Automatic model selection.
+    c.model_selection = r_model_selection(r, registry)?;
+    // Training the physical parameters of neurons.
+    c.param_learning = r_param_learning(r)?;
     Ok(c)
 }
 
-fn r_model_selection<T: Scalar>(r: &mut R, version: u32) -> Res<ModelSelectionConfig<T>> {
+#[allow(clippy::field_reassign_with_default)]
+fn r_model_selection<T: Scalar>(
+    r: &mut R,
+    registry: &CustomNeuronRegistry<T>,
+) -> Res<ModelSelectionConfig<T>> {
     let mut m = ModelSelectionConfig::default();
     m.enabled = r.bool()?;
     m.min_observed_steps = r.u64()?;
@@ -774,11 +828,9 @@ fn r_model_selection<T: Scalar>(r: &mut R, version: u32) -> Res<ModelSelectionCo
     m.min_improvement = r.f32()?;
     m.efficiency_weight = r.f32()?;
     m.specialization_weight = r.f32()?;
-    if version >= 4 {
-        m.loss_evaluation = r.bool()?;
-        m.loss_min_improvement = r.f32()?;
-        m.max_probes_per_interval = r.usize()?;
-    }
+    m.loss_evaluation = r.bool()?;
+    m.loss_min_improvement = r.f32()?;
+    m.max_probes_per_interval = r.usize()?;
     m.migration =
         StateMigration::from_code(r.u8()?).ok_or_else(|| err("unknown state migration policy"))?;
     m.include_inputs = r.bool()?;
@@ -787,7 +839,7 @@ fn r_model_selection<T: Scalar>(r: &mut R, version: u32) -> Res<ModelSelectionCo
     m.candidates = Vec::with_capacity(count);
     for _ in 0..count {
         m.candidates.push(ModelCandidate {
-            model: r_model(r)?,
+            model: r_model(r, registry)?,
             cost: r.f32()?,
             target_rate: r.opt_f32()?,
             rate_tolerance: r.f32()?,
@@ -813,7 +865,7 @@ fn r_param_learning<T: Scalar>(r: &mut R) -> Res<ParamLearningConfig<T>> {
 
 // ---------------- topology ----------------
 
-fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>, version: u32) {
+fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>) -> StructuralResult<()> {
     w.usize(t.limits.max_neurons);
     w.usize(t.limits.max_synapses);
     w.usize(t.limits.max_in_degree);
@@ -821,9 +873,7 @@ fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>, version: u32) {
     w.bool(t.limits.allow_self_loops);
     w.bool(t.limits.allow_recurrent);
     w.bool(t.limits.allow_duplicates);
-    if version >= 5 {
-        w.bool(t.limits.enforce_dale);
-    }
+    w.bool(t.limits.enforce_dale);
     w_param_limits(w, &t.param_limits);
     w.u64(t.next_neuron);
     w.u64(t.next_synapse);
@@ -831,20 +881,10 @@ fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>, version: u32) {
     for n in t.neurons.values() {
         w.u64(n.id.0);
         w.u8(n.role.code());
-        if version >= 2 {
-            w.u8(n.polarity.code());
-            w_model(w, &n.model);
-            w_state(w, &n.state);
-            w.f32(n.modulation);
-        } else {
-            // Version 1 only knows LIF and the membrane.
-            let lif = match &n.model {
-                NeuronModel::Lif(p) => *p,
-                _ => LifParams::default(),
-            };
-            w_lif(w, &lif);
-            w.f32(n.state.mem());
-        }
+        w.u8(n.polarity.code());
+        w_model(w, &n.model)?;
+        w_state(w, &n.model, &n.state)?;
+        w.f32(n.modulation);
         w.u64(n.stats.spikes);
         w.u64(n.stats.steps);
         w.f32(n.stats.rate_ema);
@@ -852,10 +892,8 @@ fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>, version: u32) {
         w.f32(n.stats.trace);
         w.u64(n.stats.active_samples);
         w.u64(n.stats.last_marked_sample);
-        if version >= 5 {
-            w.f32(n.stats.exc_drive_ema);
-            w.f32(n.stats.inh_drive_ema);
-        }
+        w.f32(n.stats.exc_drive_ema);
+        w.f32(n.stats.inh_drive_ema);
         w_meta(w, &n.meta);
     }
     w.usize(t.synapses.len());
@@ -885,10 +923,48 @@ fn w_topology<T: Scalar>(w: &mut W, t: &Topology<T>, version: u32) {
         w.f32(s.elig);
         w.u64(s.elig_step);
         w_meta(w, &s.meta);
+        // One common checkpoint: transmission model + binary flags, unconditional.
+        enc_synapse_model(w, &s.model);
+        w.bool(s.binary);
+    }
+    Ok(())
+}
+
+fn enc_synapse_model<T: Scalar>(w: &mut W, m: &SynapseModel<T>) {
+    match m {
+        SynapseModel::CurrentBased => w.u8(0),
+        SynapseModel::ConductanceBased(p) => {
+            w.u8(1);
+            w.f32(p.g_peak);
+            w.f32(p.tau);
+            w.f32(p.e_rev);
+            w.f32(p.v_half);
+            w.f32(p.delta_v);
+        }
+        SynapseModel::Ampa => w.u8(2),
+        SynapseModel::Nmda => w.u8(3),
+        SynapseModel::Gaba => w.u8(4),
     }
 }
 
-fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
+fn dec_synapse_model<T: Scalar>(r: &mut R) -> Res<SynapseModel<T>> {
+    Ok(match r.u8()? {
+        0 => SynapseModel::CurrentBased,
+        1 => SynapseModel::ConductanceBased(ConductanceParams {
+            g_peak: r.f32()?,
+            tau: r.f32()?,
+            e_rev: r.f32()?,
+            v_half: r.f32()?,
+            delta_v: r.f32()?,
+        }),
+        2 => SynapseModel::Ampa,
+        3 => SynapseModel::Nmda,
+        4 => SynapseModel::Gaba,
+        v => return Err(err(format!("unknown synapse model {v}"))),
+    })
+}
+
+fn r_topology<T: Scalar>(r: &mut R, registry: &CustomNeuronRegistry<T>) -> Res<Topology<T>> {
     let limits = TopologyLimits {
         max_neurons: r.usize()?,
         max_synapses: r.usize()?,
@@ -897,7 +973,7 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
         allow_self_loops: r.bool()?,
         allow_recurrent: r.bool()?,
         allow_duplicates: r.bool()?,
-        enforce_dale: if version >= 5 { r.bool()? } else { false },
+        enforce_dale: r.bool()?,
     };
     let pl = r_param_limits(r)?;
     let mut t = Topology::<T>::new(limits, pl);
@@ -905,25 +981,11 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
     t.next_synapse = r.u64()?;
     for _ in 0..r.count()? {
         let id = NeuronId(r.u64()?);
-        let (role, polarity, model, state, modulation) = if version >= 2 {
-            let role = r_role(r)?;
-            let polarity = r_polarity(r)?;
-            let model = r_model(r)?;
-            let state = r_state(r)?;
-            let modulation = r.f32()?;
-            (role, polarity, model, state, modulation)
-        } else {
-            let role = r_role(r)?;
-            let params = r_lif(r)?;
-            let mem = r.f32()?;
-            (
-                role,
-                NeuronPolarity::Excitatory,
-                NeuronModel::Lif(params),
-                NeuronState::Lif(LifState { mem }),
-                T::ZERO,
-            )
-        };
+        let role = r_role(r)?;
+        let polarity = r_polarity(r)?;
+        let model = r_model(r, registry)?;
+        let state = r_state(r, registry)?;
+        let modulation = r.f32()?;
         let stats = NeuronStats::<T> {
             spikes: r.u64()?,
             steps: r.u64()?,
@@ -932,8 +994,8 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
             trace: r.f32()?,
             active_samples: r.u64()?,
             last_marked_sample: r.u64()?,
-            exc_drive_ema: if version >= 5 { r.f32()? } else { T::ZERO },
-            inh_drive_ema: if version >= 5 { r.f32()? } else { T::ZERO },
+            exc_drive_ema: r.f32()?,
+            inh_drive_ema: r.f32()?,
         };
         let meta = r_meta(r)?;
         t.neurons.insert(
@@ -972,6 +1034,8 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
         };
         let (elig, elig_step) = (r.f32()?, r.u64()?);
         let meta = r_meta(r)?;
+        // One common checkpoint: transmission model + binary flags, unconditional.
+        let (model, binary) = (dec_synapse_model(r)?, r.bool()?);
         t.synapses.insert(
             id,
             Synapse {
@@ -980,6 +1044,8 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
                 dst,
                 weight,
                 delay,
+                model,
+                binary,
                 state,
                 stats,
                 elig,
@@ -996,7 +1062,7 @@ fn r_topology<T: Scalar>(r: &mut R, version: u32) -> Res<Topology<T>> {
 
 // ---------------- network ----------------
 
-fn w_network<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>, version: u32) {
+fn w_network<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>) {
     let s = &n.cfg.stdp;
     w.u8(match s.mode {
         PlasticityMode::Off => 0,
@@ -1028,27 +1094,19 @@ fn w_network<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>, version: u32) {
     w.f32(n.cfg.rate_alpha);
     w.f32(n.cfg.credit_alpha);
     w.f32(n.cfg.activity_trace_decay);
-    // Version 2: modulating gain attenuation.
-    if version >= 2 {
-        w.f32(n.cfg.modulation_decay);
-    }
-    // Version 3: input neuron mode.
-    if version >= 3 {
-        w.u8(n.cfg.input_mode.code());
-    }
-    // Version 5: Inhibitory plasticity and E/I balance.
-    if version >= 5 {
-        let (i, b) = (&n.cfg.inhibitory, &n.cfg.balance);
-        w.bool(i.enabled);
-        w.f32(i.eta);
-        w.f32(i.target_rate);
-        w.bool(b.enabled);
-        w.f32(b.target_ratio);
-        w.f32(b.rate);
-        w.f32(b.max_step);
-        w.f32(b.min_drive);
-        w.u64(b.min_observed_steps);
-    }
+    w.f32(n.cfg.modulation_decay);
+    w.u8(n.cfg.input_mode.code());
+    // Inhibitory plasticity and E/I balance.
+    let (i, b) = (&n.cfg.inhibitory, &n.cfg.balance);
+    w.bool(i.enabled);
+    w.f32(i.eta);
+    w.f32(i.target_rate);
+    w.bool(b.enabled);
+    w.f32(b.target_ratio);
+    w.f32(b.rate);
+    w.f32(b.max_step);
+    w.f32(b.min_drive);
+    w.u64(b.min_observed_steps);
     w.u64(n.step);
     w.u64(n.sample);
     w.bool(n.plasticity_enabled);
@@ -1076,9 +1134,63 @@ fn w_network<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>, version: u32) {
             w.u64(*st);
         }
     }
+    // One common checkpoint: STP + conductance + learnable, written unconditionally.
+    write_stp_block(w, n);
+    write_cond_block(w, n);
+    write_learnable_block(w, n);
 }
 
-fn r_network<T: Scalar>(r: &mut R, topo: Topology<T>, version: u32) -> Res<DynamicNetwork<T>> {
+fn write_stp_block<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>) {
+    match &n.cfg.stp {
+        Some(cfg) => {
+            w.bool(true);
+            w.u8(cfg.mode.code());
+            w.f32(cfg.u);
+            w.f32(cfg.tau_fac);
+            w.f32(cfg.tau_rec);
+            w.usize(n.stp_states.len());
+            for (id, st) in &n.stp_states {
+                w.u64(id.0);
+                w.f32(st.x);
+                w.f32(st.u);
+                w.u64(st.last_event_step);
+                w.f32(st.released);
+            }
+        }
+        None => w.bool(false),
+    }
+}
+
+fn write_cond_block<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>) {
+    w.usize(n.cond_states.len());
+    for (id, st) in &n.cond_states {
+        w.u64(id.0);
+        w.f32(st.g);
+    }
+}
+
+fn write_learnable_block<T: Scalar>(w: &mut W, n: &DynamicNetwork<T>) {
+    match &n.cfg.learnable_delay {
+        Some(c) => {
+            w.bool(true);
+            w.bool(c.enabled);
+            w.f32(c.min_delay);
+            w.f32(c.max_delay);
+            w.f32(c.initial);
+            w.f32(c.learning_rate);
+            w.f32(c.elig_decay);
+            w.usize(n.delays.len());
+            for (id, st) in &n.delays {
+                w.u64(id.0);
+                w.f32(st.delay);
+                w.f32(st.elig);
+            }
+        }
+        None => w.bool(false),
+    }
+}
+
+fn r_network<T: Scalar>(r: &mut R, topo: Topology<T>) -> Res<DynamicNetwork<T>> {
     let mode = match r.u8()? {
         0 => PlasticityMode::Off,
         1 => PlasticityMode::Immediate,
@@ -1113,30 +1225,25 @@ fn r_network<T: Scalar>(r: &mut R, topo: Topology<T>, version: u32) -> Res<Dynam
         rate_alpha: r.f32()?,
         credit_alpha: r.f32()?,
         activity_trace_decay: r.f32()?,
-        modulation_decay: if version >= 2 { r.f32()? } else { T::c(0.9) },
-        input_mode: if version >= 3 {
-            InputMode::from_code(r.u8()?).ok_or_else(|| err("unknown mode of input neurons"))?
-        } else {
-            InputMode::Spike
-        },
+        modulation_decay: r.f32()?,
+        input_mode: InputMode::from_code(r.u8()?)
+            .ok_or_else(|| err("unknown mode of input neurons"))?,
         ..EngineConfig::<T>::default()
     };
     let mut cfg = cfg;
-    if version >= 5 {
-        cfg.inhibitory = InhibitoryPlasticityConfig {
-            enabled: r.bool()?,
-            eta: r.f32()?,
-            target_rate: r.f32()?,
-        };
-        cfg.balance = EiBalanceConfig {
-            enabled: r.bool()?,
-            target_ratio: r.f32()?,
-            rate: r.f32()?,
-            max_step: r.f32()?,
-            min_drive: r.f32()?,
-            min_observed_steps: r.u64()?,
-        };
-    }
+    cfg.inhibitory = InhibitoryPlasticityConfig {
+        enabled: r.bool()?,
+        eta: r.f32()?,
+        target_rate: r.f32()?,
+    };
+    cfg.balance = EiBalanceConfig {
+        enabled: r.bool()?,
+        target_ratio: r.f32()?,
+        rate: r.f32()?,
+        max_step: r.f32()?,
+        min_drive: r.f32()?,
+        min_observed_steps: r.u64()?,
+    };
     let mut net = DynamicNetwork::new(topo, cfg)?;
     net.step = r.u64()?;
     net.sample = r.u64()?;
@@ -1160,7 +1267,69 @@ fn r_network<T: Scalar>(r: &mut R, topo: Topology<T>, version: u32) -> Res<Dynam
         }
         net.tracker = Some(t);
     }
+    // One common checkpoint: STP + conductance + learnable, read unconditionally.
+    read_stp_block(r, &mut net)?;
+    read_cond_block(r, &mut net)?;
+    read_learnable_block(r, &mut net)?;
     Ok(net)
+}
+
+fn read_stp_block<T: Scalar>(r: &mut R, net: &mut DynamicNetwork<T>) -> Res<()> {
+    if r.bool()? {
+        let mode = StpMode::from_code(r.u8()?).ok_or_else(|| err("unknown STP mode"))?;
+        let (u, tau_fac, tau_rec) = (r.f32()?, r.f32()?, r.f32()?);
+        net.cfg.stp = Some(StpConfig::new(mode, u, tau_fac, tau_rec));
+        let n = r.usize()?;
+        for _ in 0..n {
+            let id = SynapseId(r.u64()?);
+            let (x, u, last_event_step, released) = (r.f32()?, r.f32()?, r.u64()?, r.f32()?);
+            net.stp_states.insert(
+                id,
+                StpState {
+                    x,
+                    u,
+                    last_event_step,
+                    released,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_cond_block<T: Scalar>(r: &mut R, net: &mut DynamicNetwork<T>) -> Res<()> {
+    let n = r.usize()?;
+    for _ in 0..n {
+        let id = SynapseId(r.u64()?);
+        net.cond_states.insert(id, CondState { g: r.f32()? });
+    }
+    Ok(())
+}
+
+fn read_learnable_block<T: Scalar>(r: &mut R, net: &mut DynamicNetwork<T>) -> Res<()> {
+    if r.bool()? {
+        let cfg = LearnableDelayConfig {
+            enabled: r.bool()?,
+            min_delay: r.f32()?,
+            max_delay: r.f32()?,
+            initial: r.f32()?,
+            learning_rate: r.f32()?,
+            elig_decay: r.f32()?,
+        };
+        net.cfg.learnable_delay = Some(cfg);
+        let n = r.usize()?;
+        for _ in 0..n {
+            let id = SynapseId(r.u64()?);
+            net.delays.insert(
+                id,
+                TrainableDelayState {
+                    delay: r.f32()?,
+                    elig: r.f32()?,
+                },
+            );
+        }
+    }
+    Ok(())
 }
 
 // ---------------- controller ----------------
@@ -1211,7 +1380,10 @@ fn r_event(r: &mut R) -> Res<StructuralEvent> {
     })
 }
 
-fn w_controller<T: Scalar>(w: &mut W, c: &StructuralPlasticityController<T>, version: u32) {
+fn w_controller<T: Scalar>(
+    w: &mut W,
+    c: &StructuralPlasticityController<T>,
+) -> StructuralResult<()> {
     w.u64(c.rng.state());
     w.usize(c.log.capacity);
     w.u64(c.log.next_seq);
@@ -1246,7 +1418,7 @@ fn w_controller<T: Scalar>(w: &mut W, c: &StructuralPlasticityController<T>, ver
     }
     w.bool(c.pending.is_some());
     if let Some(p) = &c.pending {
-        w_topology(w, &p.backup, version);
+        w_topology(w, &p.backup)?;
         w.f32(p.loss_before);
         w.f32(p.cost_before);
         w.u64(p.calls_left);
@@ -1258,17 +1430,18 @@ fn w_controller<T: Scalar>(w: &mut W, c: &StructuralPlasticityController<T>, ver
     }
     w.bool(c.best.is_some());
     if let Some(b) = &c.best {
-        w_topology(w, &b.topology, version);
+        w_topology(w, &b.topology)?;
         w.f32(b.cost);
         w.f32(b.loss);
         w.u64(b.step);
     }
+    Ok(())
 }
 
 fn r_controller<T: Scalar>(
     r: &mut R,
     cfg: StructuralConfig<T>,
-    version: u32,
+    registry: &CustomNeuronRegistry<T>,
 ) -> Res<StructuralPlasticityController<T>> {
     let mut c = StructuralPlasticityController::new(cfg)?;
     c.rng = Rng64::from_state(r.u64()?);
@@ -1312,7 +1485,7 @@ fn r_controller<T: Scalar>(
         c.streak.insert(k, r.u32()?);
     }
     if r.bool()? {
-        let backup = r_topology(r, version)?;
+        let backup = r_topology(r, registry)?;
         let (loss_before, cost_before, calls_left) = (r.f32()?, r.f32()?, r.u64()?);
         let mut seqs = Vec::new();
         for _ in 0..r.count()? {
@@ -1327,7 +1500,7 @@ fn r_controller<T: Scalar>(
         });
     }
     if r.bool()? {
-        let topology = r_topology(r, version)?;
+        let topology = r_topology(r, registry)?;
         c.best = Some(BestSnapshot {
             topology,
             cost: r.f32()?,
@@ -1342,13 +1515,13 @@ fn r_controller<T: Scalar>(
 
 /// Serialize the network and controller (and the optional `extra` block).
 ///
-/// For `f32`, the version [`FORMAT_VERSION`] is written (the format is the same, read by the old code);
-/// for `f64` - [`FORMAT_VERSION_F64`] with values of 8 bytes, without loss of precision.
+/// The version [`FORMAT_VERSION`] is written for `f32` and [`FORMAT_VERSION_F64`]
+/// for `f64` (values of 8 bytes, without loss of precision).
 pub fn save_checkpoint<T: Scalar>(
     net: &DynamicNetwork<T>,
     ctl: &StructuralPlasticityController<T>,
     extra: &[u8],
-) -> Vec<u8> {
+) -> StructuralResult<Vec<u8>> {
     let wide = std::mem::size_of::<T>() > 4;
     let version = if wide {
         FORMAT_VERSION_F64
@@ -1361,28 +1534,23 @@ pub fn save_checkpoint<T: Scalar>(
     if wide {
         w.u8(8);
     }
-    w_config(&mut w, ctl.config(), version);
-    w_topology(&mut w, net.topology(), version);
-    w_network(&mut w, net, version);
-    w_controller(&mut w, ctl, version);
+    w_config(&mut w, ctl.config())?;
+    w_topology(&mut w, net.topology())?;
+    w_network(&mut w, net);
+    w_controller(&mut w, ctl)?;
     w.bytes(extra);
     let sum = fnv1a(&w.0);
     w.u64(sum);
-    w.0
+    Ok(w.0)
 }
 
-/// Restore state from bytes. Error with invalid signature, more
-/// new version of the format, data corruption or violation of topology invariants.
-///
-/// Reads in `f32`; values from file `f64` are given with loss of precision.
-/// For other scalars - [`load_checkpoint_as`].
-pub fn load_checkpoint(bytes: &[u8]) -> StructuralResult<Checkpoint<f32>> {
-    load_checkpoint_as::<f32>(bytes)
-}
-
-/// Same as [`load_checkpoint`], but into the selected scalar `T`. File `f32` (versions 1–5)
-/// reads in `f64` without loss; the `f64` file (version 6) is read in `f32` with rounding.
-pub fn load_checkpoint_as<T: Scalar>(bytes: &[u8]) -> StructuralResult<Checkpoint<T>> {
+/// Restore state from bytes, providing the [`CustomNeuronRegistry`] for
+/// user-defined models. Equivalent to [`load_checkpoint_as`], but custom
+/// neurons can be restored (see [`load_checkpoint`]).
+pub fn load_checkpoint_with_registry<T: Scalar>(
+    bytes: &[u8],
+    registry: &CustomNeuronRegistry<T>,
+) -> StructuralResult<Checkpoint<T>> {
     if bytes.len() < 4 + 4 + 8 || &bytes[..4] != MAGIC {
         return Err(err("invalid file signature"));
     }
@@ -1398,9 +1566,9 @@ pub fn load_checkpoint_as<T: Scalar>(bytes: &[u8]) -> StructuralResult<Checkpoin
         wide: false,
     };
     let version = r.u32()?;
-    if version == 0 || version > FORMAT_VERSION_F64 {
+    if version != FORMAT_VERSION && version != FORMAT_VERSION_F64 {
         return Err(err(format!(
-            "format version {version} is not supported (maximum {FORMAT_VERSION_F64})"
+            "format version {version} is not supported (expected {FORMAT_VERSION} for f32 or {FORMAT_VERSION_F64} for f64)"
         )));
     }
     if version >= FORMAT_VERSION_F64 {
@@ -1410,10 +1578,10 @@ pub fn load_checkpoint_as<T: Scalar>(bytes: &[u8]) -> StructuralResult<Checkpoin
             x => return Err(err(format!("value width {x} is not supported"))),
         };
     }
-    let cfg = r_config(&mut r, version)?;
-    let topo = r_topology(&mut r, version)?;
-    let network = r_network(&mut r, topo, version)?;
-    let controller = r_controller(&mut r, cfg, version)?;
+    let cfg = r_config(&mut r, registry)?;
+    let topo = r_topology(&mut r, registry)?;
+    let network = r_network(&mut r, topo)?;
+    let controller = r_controller(&mut r, cfg, registry)?;
     let extra = r.bytes()?;
     if r.p != body.len() {
         return Err(err("extra data at the end of the file"));
@@ -1425,6 +1593,23 @@ pub fn load_checkpoint_as<T: Scalar>(bytes: &[u8]) -> StructuralResult<Checkpoin
     })
 }
 
+/// Restore state from bytes. Error with invalid signature, more
+/// new version of the format, data corruption or violation of topology invariants.
+///
+/// Reads in `f32`; values from file `f64` are given with loss of precision.
+/// For other scalars - [`load_checkpoint_as`].
+pub fn load_checkpoint(bytes: &[u8]) -> StructuralResult<Checkpoint<f32>> {
+    load_checkpoint_as::<f32>(bytes)
+}
+
+/// Same as [`load_checkpoint`], but into the selected scalar `T`. File `f32` (versions 1–5)
+/// reads in `f64` without loss; the `f64` file (version 6) is read in `f32` with rounding.
+pub fn load_checkpoint_as<T: Scalar>(bytes: &[u8]) -> StructuralResult<Checkpoint<T>> {
+    // Without a registry custom models are rejected with `UnknownCustomModel`.
+    let registry = CustomNeuronRegistry::new();
+    load_checkpoint_with_registry(bytes, &registry)
+}
+
 /// Write the checkpoint to a file (via a temporary file and renaming).
 pub fn save_to_file<T: Scalar>(
     path: impl AsRef<Path>,
@@ -1434,7 +1619,7 @@ pub fn save_to_file<T: Scalar>(
 ) -> StructuralResult<()> {
     let path = path.as_ref();
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, save_checkpoint(net, ctl, extra))
+    std::fs::write(&tmp, save_checkpoint(net, ctl, extra)?)
         .map_err(|e| err(format!("entry {}: {e}", tmp.display())))?;
     std::fs::rename(&tmp, path).map_err(|e| err(format!("renaming to {}: {e}", path.display())))
 }
@@ -1454,7 +1639,6 @@ pub fn load_from_file_as<T: Scalar>(path: impl AsRef<Path>) -> StructuralResult<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ResetMode;
     use crate::structural::controller::Metrics;
     use crate::structural::topology::Birth;
 
@@ -1495,25 +1679,6 @@ mod tests {
         t
     }
 
-    fn encode(
-        version: u32,
-        cfg: &StructuralConfig,
-        net: &DynamicNetwork,
-        ctl: &StructuralPlasticityController,
-    ) -> Vec<u8> {
-        let mut w = W(Vec::new(), false);
-        w.0.extend_from_slice(MAGIC);
-        w.u32(version);
-        w_config(&mut w, cfg, version);
-        w_topology(&mut w, net.topology(), version);
-        w_network(&mut w, net, version);
-        w_controller(&mut w, ctl, version);
-        w.bytes(b"extra");
-        let sum = fnv1a(&w.0);
-        w.u64(sum);
-        w.0
-    }
-
     #[test]
     fn heterogeneous_roundtrip_keeps_model_polarity_and_state() {
         let cfg = StructuralConfig::default();
@@ -1530,7 +1695,7 @@ mod tests {
             .modulation;
         assert!(expected_mod > 0.0);
         let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let c = load_checkpoint(&save_checkpoint(&net, &ctl, b"x")).unwrap();
+        let c = load_checkpoint(&save_checkpoint(&net, &ctl, b"x").unwrap()).unwrap();
         assert_eq!(*c.network.topology(), *net.topology());
         let h = c
             .network
@@ -1553,6 +1718,7 @@ mod tests {
         assert_eq!(o.modulation, expected_mod);
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     #[test]
     fn current_version_roundtrip_keeps_input_mode_model_selection_and_param_learning() {
         let mut cfg = StructuralConfig::default();
@@ -1584,7 +1750,7 @@ mod tests {
         engine.input_mode = InputMode::Current;
         let net = DynamicNetwork::new(t, engine).unwrap();
         let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let bytes = save_checkpoint(&net, &ctl, b"v4");
+        let bytes = save_checkpoint(&net, &ctl, b"v4").unwrap();
         assert_eq!(&bytes[4..8], &FORMAT_VERSION.to_le_bytes());
         let c = load_checkpoint(&bytes).unwrap();
         assert_eq!(c.network.config().input_mode, InputMode::Current);
@@ -1594,146 +1760,12 @@ mod tests {
     }
 
     #[test]
-    fn version_four_checkpoint_loads_in_legacy_dale_mode_and_can_be_migrated() {
-        let mut cfg = StructuralConfig::default();
-        cfg.topology.enforce_dale = false;
-        cfg.param_learning.enabled = true;
-        cfg.param_learning.min_observed_steps = 33;
-        let mut t = sample_topology(&cfg);
-        // Legacy: an excitatory source with a negative weight.
-        let (src, dst) = {
-            let s = t.synapses().next().unwrap();
-            (s.id, s.src)
-        };
-        t.set_synapse_weight(src, -0.4).unwrap();
-        let _ = dst;
-        let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
-        let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let bytes = encode(4, &cfg, &net, &ctl);
-        assert_eq!(&bytes[4..8], &4u32.to_le_bytes());
-        let mut c = load_checkpoint(&bytes).unwrap();
-        // Fields v4 are read, v5 are default; Dale's principle is turned off.
-        assert_eq!(c.controller.config().param_learning.min_observed_steps, 33);
-        assert!(!c.network.topology().dale());
-        assert!(!c.controller.config().topology.enforce_dale);
-        assert_eq!(
-            c.network.config().inhibitory,
-            InhibitoryPlasticityConfig::default()
-        );
-        assert_eq!(c.network.topology().synapse(src).unwrap().weight, -0.4);
-        c.network.topology().validate().unwrap();
-        // Explicit migration procedure to E/I mode.
-        let changed = c.enable_dale();
-        assert!(changed >= 1);
-        assert!(c.network.topology().dale());
-        assert!(c.controller.config().topology.enforce_dale);
-        c.network.topology().validate().unwrap();
-        assert_eq!(c.network.topology().synapse(src).unwrap().weight, 0.4);
-        assert_eq!(c.enable_dale(), 0, "re-migration doesn't change anything");
-        // After migration, the checkpoint is saved in strict mode.
-        let again = load_checkpoint(&save_checkpoint(&c.network, &c.controller, b"")).unwrap();
-        assert!(again.network.topology().dale());
-        assert_eq!(
-            &save_checkpoint(&again.network, &again.controller, b"")[4..8],
-            &FORMAT_VERSION.to_le_bytes()
-        );
-    }
-
-    #[test]
-    fn version_three_checkpoint_defaults_to_loss_evaluation_and_no_param_learning() {
-        let mut cfg = StructuralConfig::default();
-        cfg.model_selection.enabled = true;
-        cfg.model_selection.min_observed_steps = 21;
-        let t = sample_topology(&cfg);
-        let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
-        let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let bytes = encode(3, &cfg, &net, &ctl);
-        let c = load_checkpoint(&bytes).unwrap();
-        let m = &c.controller.config().model_selection;
-        assert!(m.enabled);
-        assert_eq!(m.min_observed_steps, 21);
-        // The new v4 fields are not present in v3 - default values are taken.
-        let d = ModelSelectionConfig::<f32>::default();
-        assert_eq!(m.loss_evaluation, d.loss_evaluation);
-        assert_eq!(m.loss_min_improvement, d.loss_min_improvement);
-        assert_eq!(m.max_probes_per_interval, d.max_probes_per_interval);
-        assert_eq!(
-            c.controller.config().param_learning,
-            ParamLearningConfig::default()
-        );
-        assert!(!c.controller.config().param_learning.enabled);
-    }
-
-    #[test]
-    fn version_two_checkpoint_defaults_to_spike_inputs_and_no_selection() {
-        let cfg = StructuralConfig::default();
-        let t = sample_topology(&cfg);
-        let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
-        let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let bytes = encode(2, &cfg, &net, &ctl);
-        let c = load_checkpoint(&bytes).unwrap();
-        assert_eq!(c.network.config().input_mode, InputMode::Spike);
-        assert_eq!(
-            c.controller.config().model_selection,
-            ModelSelectionConfig::default()
-        );
-        assert!(!c.controller.config().model_selection.enabled);
-    }
-
-    #[test]
-    fn version_one_checkpoint_migrates_to_lif_excitatory() {
-        let cfg = StructuralConfig::default();
-        let mut t = Topology::new(cfg.topology, cfg.params);
-        let b = Birth::default();
-        let i = t
-            .add_neuron(NeuronRole::Input, LifParams::default(), Origin::Initial, b)
-            .unwrap();
-        let h = t
-            .add_neuron(
-                NeuronRole::Hidden,
-                LifParams {
-                    beta: 0.8,
-                    threshold: 1.2,
-                    reset: ResetMode::Subtract,
-                },
-                Origin::Initial,
-                b,
-            )
-            .unwrap();
-        let o = t
-            .add_neuron(NeuronRole::Output, LifParams::default(), Origin::Initial, b)
-            .unwrap();
-        t.add_synapse(i, h, 0.5, 0, Origin::Initial, b).unwrap();
-        t.add_synapse(h, o, 0.9, 0, Origin::Initial, b).unwrap();
-        t.neurons.get_mut(&h).unwrap().state = NeuronState::Lif(LifState { mem: 0.45 });
-        let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
-        let ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let bytes = encode(1, &cfg, &net, &ctl);
-        let c = load_checkpoint(&bytes).unwrap();
-        let h2 = c
-            .network
-            .topology()
-            .neurons()
-            .find(|n| n.role == NeuronRole::Hidden)
-            .unwrap();
-        assert_eq!(h2.polarity, NeuronPolarity::Excitatory);
-        assert!(matches!(h2.model, NeuronModel::Lif(p) if p.beta == 0.8));
-        assert!(matches!(h2.state, NeuronState::Lif(s) if s.mem == 0.45));
-        assert_eq!(h2.modulation, 0.0);
-        assert_eq!(
-            c.network.config().modulation_decay,
-            EngineConfig::<f32>::default().modulation_decay
-        );
-        assert_eq!(c.extra, b"extra");
-    }
-
-    #[test]
     fn migrated_network_continues_with_model_dynamics() {
         let cfg = StructuralConfig::default();
         let t = sample_topology(&cfg);
         let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
         let mut ctl = StructuralPlasticityController::new(cfg.clone()).unwrap();
-        let mut c = load_checkpoint(&save_checkpoint(&net, &ctl, b"")).unwrap();
+        let mut c = load_checkpoint(&save_checkpoint(&net, &ctl, b"").unwrap()).unwrap();
         // One step should not panic and should leave the states finite.
         c.network.step(&[1.0]).unwrap();
         c.network.topology().validate().unwrap();

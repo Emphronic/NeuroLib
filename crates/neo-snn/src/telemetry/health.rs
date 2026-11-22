@@ -57,14 +57,14 @@ pub fn assess(
 
     // ──Learning metrics ──────────────────────── ────────────────────────
     // Loss diverges or not a number: more important than anything else.
-    if let Some(t) = loss.trend() {
-        if t > 0.25 {
-            out.push(Finding::new(
-                Severity::Problem,
-                "the loss is growing",
-                "reduce learning rate (lr) by 2–10 times",
-            ));
-        }
+    if let Some(t) = loss.trend()
+        && t > 0.25
+    {
+        out.push(Finding::new(
+            Severity::Problem,
+            "the loss is growing",
+            "reduce learning rate (lr) by 2–10 times",
+        ));
     }
 
     if let Some(g) = grad.recent_mean(8) {
@@ -148,7 +148,7 @@ pub fn assess(
         ));
     }
 
-    out.sort_by(|a, b| b.severity.cmp(&a.severity));
+    out.sort_by_key(|a| std::cmp::Reverse(a.severity));
     out
 }
 

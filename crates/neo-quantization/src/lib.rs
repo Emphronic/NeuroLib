@@ -67,7 +67,8 @@
 // invalid packing in this code produces silently corrupted weights rather
 // than a panic, and `unsafe` would turn that into UB as well.
 #![forbid(unsafe_code)]
-#![deny(clippy::float_cmp)]
+// Exact float comparison is an error in library code; tests compare bit-exact values on purpose.
+#![cfg_attr(not(test), deny(clippy::float_cmp))]
 #![warn(clippy::all)]
 #![allow(clippy::module_inception)]
 // Block indices, bit shifts, and level tables are hard-coded only with the

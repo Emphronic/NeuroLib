@@ -111,14 +111,14 @@ pub fn kernel_kind(w: &PackedBuffer, k: usize) -> KernelKind {
 
         PackedBuffer::Gguf(p) => {
             let be = p.dtype.block_elems();
-            if pack::gguf::is_supported(p.dtype) && be > 0 && k % be == 0 {
+            if pack::gguf::is_supported(p.dtype) && be > 0 && k.is_multiple_of(be) {
                 KernelKind::RowDecode
             } else {
                 KernelKind::DenseFallback
             }
         }
         PackedBuffer::KQuant(p) => {
-            if pack::kquant::is_supported(p.dtype) && k % pack::kquant::QK_K == 0 {
+            if pack::kquant::is_supported(p.dtype) && k.is_multiple_of(pack::kquant::QK_K) {
                 KernelKind::RowDecode
             } else {
                 KernelKind::DenseFallback
@@ -467,7 +467,7 @@ impl SegDecoder for GgufDec<'_> {
     }
     fn decode_raw(&self, start: usize, buf: &mut [f32]) {
         let (be, bb) = (self.0.dtype.block_elems(), self.0.dtype.block_bytes());
-        debug_assert!(start % be == 0 && buf.len() % be == 0);
+        debug_assert!(start.is_multiple_of(be) && buf.len().is_multiple_of(be));
         let blocks = &self.0.blocks[(start / be) * bb..((start + buf.len()) / be) * bb];
         let sub = pack::GgufPacked {
             dtype: self.0.dtype,
@@ -493,7 +493,7 @@ impl SegDecoder for KQuantDec<'_> {
     }
     fn decode_raw(&self, start: usize, buf: &mut [f32]) {
         let (be, bb) = (pack::kquant::QK_K, self.0.dtype.block_bytes());
-        debug_assert!(start % be == 0 && buf.len() % be == 0);
+        debug_assert!(start.is_multiple_of(be) && buf.len().is_multiple_of(be));
         let blocks = &self.0.blocks[(start / be) * bb..((start + buf.len()) / be) * bb];
         let sub = pack::KQuantPacked {
             dtype: self.0.dtype,
@@ -514,15 +514,15 @@ impl SegDecoder for KQuantDec<'_> {
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     let mut acc = [0.0f32; 8];
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (xa, xb) in (&mut ca).zip(&mut cb) {
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
+    for (xa, xb) in ca.iter().zip(cb) {
         for l in 0..8 {
             acc[l] += xa[l] * xb[l];
         }
     }
     let mut tail = 0.0f32;
-    for (xa, xb) in ca.remainder().iter().zip(cb.remainder()) {
+    for (xa, xb) in ra.iter().zip(rb) {
         tail += xa * xb;
     }
     acc.iter().sum::<f32>() + tail

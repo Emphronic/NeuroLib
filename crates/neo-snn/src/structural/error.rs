@@ -101,6 +101,39 @@ pub enum StructuralError {
         /// Got.
         actual: usize,
     },
+    /// A user-defined dynamic neuron model is not registered in the registry.
+    #[error("custom model \"{0}\" is not registered in the registry")]
+    UnknownCustomModel(String),
+    /// A custom model and the state are incompatible (model id or state type mismatch).
+    #[error("custom model \"{0}\": incompatible state")]
+    IncompatibleCustomState(String),
+    /// Invalid configuration of a custom model.
+    #[error("custom model \"{0}\": invalid configuration: {1}")]
+    InvalidCustomConfig(String, String),
+    /// Invalid state of a custom model.
+    #[error("custom model \"{0}\": invalid state: {1}")]
+    InvalidCustomState(String, String),
+    /// Serialization of a custom model failed.
+    #[error("custom model \"{0}\": serialization error: {1}")]
+    CustomSerialization(String, String),
+    /// Schema version of the custom model is not supported by the registry entry.
+    #[error("custom model \"{0}\": schema version {1} is not supported (expected {2})")]
+    UnsupportedSchemaVersion(String, u32, u32),
+    /// Migration of the custom model state is not possible under the given policy.
+    #[error("custom model \"{0}\": migration to {1} is not supported")]
+    MigrationNotSupported(String, &'static str),
+    /// The custom model does not provide the dynamic network execution handler
+    /// (for example, a non-`Default`-constructible model is stored in a network
+    /// built without a registry).
+    #[error("custom model \"{0}\" has no registered handler for the dynamic network")]
+    MissingCustomHandler(String),
+    /// The neuron model does not support the online local eligibility dynamics
+    /// of the plasticity system (`structural::eprop`). Typed error, not a
+    /// fallback approximation: models that do not declare support
+    /// (`online_eprop_family() == None`) are rejected instead of being trained
+    /// with an incorrect rule.
+    #[error("neuron model \"{0}\" does not support online local eligibility dynamics")]
+    UnsupportedEpropDynamics(String),
 }
 
 impl StructuralError {

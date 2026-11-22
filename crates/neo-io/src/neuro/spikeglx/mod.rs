@@ -129,11 +129,7 @@ fn table(s: &str) -> Vec<Vec<&str>> {
     s.trim_start_matches('(')
         .trim_end_matches(')')
         .split(")(")
-        .map(|g| {
-            g.split(|c: char| c == ' ' || c == ',' || c == ':')
-                .filter(|f| !f.is_empty())
-                .collect()
-        })
+        .map(|g| g.split([' ', ',', ':']).filter(|f| !f.is_empty()).collect())
         .collect()
 }
 

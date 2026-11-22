@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 
 use crate::state::ResetMode;
 
+use super::custom::CustomNeuronInstance;
 use super::error::{StructuralError, StructuralResult};
 use super::model::{
     LifParams, ModelSwitchOutcome, NeuronModel, NeuronParam, NeuronPolarity, NeuronRole,
@@ -72,8 +73,8 @@ impl<T: Scalar> NeuronMutation<T> {
 }
 
 /// Result of `mutate_neuron`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MutationOutcome<T = f32> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationOutcome<T: Scalar = f32> {
     /// Model before the change.
     pub old: NeuronModel<T>,
     /// Model after the change (taking limits into account).
@@ -121,7 +122,7 @@ pub struct SplitResult {
 
 /// A removed neuron with all its synapses.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RemovedNeuron<T = f32> {
+pub struct RemovedNeuron<T: Scalar = f32> {
     /// Neuron.
     pub neuron: Neuron<T>,
     /// Removed synapses.
@@ -163,6 +164,27 @@ impl<T: Scalar> Topology<T> {
         let model = model.into();
         model.validate(&self.param_limits)?;
         Ok(self.raw_insert_neuron(role, polarity, model, birth, origin))
+    }
+
+    /// Add a custom (user-defined) neuron.
+    ///
+    /// The model is type-erased internally; `Topology` and `DynamicNetwork`
+    /// accept heterogeneous networks (see [`structural::custom`](super::custom)).
+    pub fn add_custom_neuron<M: super::custom::DynamicNeuronModel<T>>(
+        &mut self,
+        role: NeuronRole,
+        polarity: NeuronPolarity,
+        model: M,
+        origin: Origin,
+        birth: Birth,
+    ) -> StructuralResult<NeuronId> {
+        self.add_neuron_with(
+            role,
+            polarity,
+            CustomNeuronInstance::new(model),
+            origin,
+            birth,
+        )
     }
 
     /// Remove a hidden neuron together with all its incoming and outgoing
@@ -233,7 +255,8 @@ impl<T: Scalar> Topology<T> {
         if !jitter.is_finite() || jitter < T::ZERO {
             return Err(StructuralError::param("jitter", "must be finite and >= 0"));
         }
-        let (model, polarity, state, modulation) = (n.model, n.polarity, n.state, n.modulation);
+        let (model, polarity, state, modulation) =
+            (n.model.clone(), n.polarity, n.state.clone(), n.modulation);
         let active = |t: &Topology<T>, list: &[SynapseId]| -> Vec<Synapse<T>> {
             list.iter()
                 .filter_map(|s| t.synapses.get(s))
@@ -349,15 +372,15 @@ impl<T: Scalar> Topology<T> {
             .neurons
             .get_mut(&id)
             .ok_or(StructuralError::NoSuchNeuron(id))?;
-        let old = n.model;
+        let old = n.model.clone();
         if m.is_empty() {
             return Ok(MutationOutcome {
-                old,
+                old: old.clone(),
                 new: old,
                 clamped: false,
             });
         }
-        let mut new = old;
+        let mut new = old.clone();
         let mut clamped = false;
         if let Some(b) = m.beta {
             let c = new.set_beta(b, &lim)?;
@@ -390,7 +413,7 @@ impl<T: Scalar> Topology<T> {
             polarity_changed = n.polarity != p;
             n.polarity = p;
         }
-        n.model = new;
+        n.model = new.clone();
         if polarity_changed {
             // Dale's principle: outgoing weights change sign together with the polarity.
             self.resign_outgoing(id);
@@ -419,29 +442,29 @@ impl<T: Scalar> Topology<T> {
                 .neurons
                 .get_mut(&id)
                 .ok_or(StructuralError::NoSuchNeuron(id))?;
-            let old_model = n.model;
-            let old_state = n.state;
-            if old_model == model {
+            let old_model = n.model.clone();
+            let old_state = n.state.clone();
+            if old_model.is_same_dynamics(&model) {
                 return Ok(ModelSwitchOutcome {
                     old_model,
-                    new_model: model,
-                    old_state,
+                    new_model: model.clone(),
+                    old_state: old_state.clone(),
                     new_state: old_state,
                     migration,
                     changed: false,
                 });
             }
             let source = if old_state.matches(&old_model) {
-                old_state
+                old_state.clone()
             } else {
                 old_model.init_state()
             };
             let mut new_state = source.migrate_between(&old_model, &model, migration);
-            if !new_state.is_finite() {
+            if !new_state.is_finite() || !new_state.matches(&model) {
                 new_state = model.init_state();
             }
-            n.model = model;
-            n.state = new_state;
+            n.model = model.clone();
+            n.state = new_state.clone();
             ModelSwitchOutcome {
                 old_model,
                 new_model: model,

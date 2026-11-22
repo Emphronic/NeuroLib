@@ -114,13 +114,13 @@ impl FixedShapeController {
         }
         for (k, s) in specs.iter().enumerate() {
             s.validate(k, specs.len())?;
-            if let Some(src) = s.input_from {
-                if specs[src].out_features != s.in_features {
-                    return Err(StructuralError::InvalidConfig(format!(
-                        "layer {k} \"{}\": in_features {} ≠ out_features {} of source layer {src}",
-                        s.name, s.in_features, specs[src].out_features
-                    )));
-                }
+            if let Some(src) = s.input_from
+                && specs[src].out_features != s.in_features
+            {
+                return Err(StructuralError::InvalidConfig(format!(
+                    "layer {k} \"{}\": in_features {} ≠ out_features {} of source layer {src}",
+                    s.name, s.in_features, specs[src].out_features
+                )));
             }
         }
         let mut rng = Rng64::new(cfg.seed);

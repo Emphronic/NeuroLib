@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use super::error::StructuralResult;
 use super::mutation::{ActionKind, Reason, StructuralAction, apply_action};
-use super::network::DynamicNetwork;
+use super::network::{DynamicNetwork, SynapseModel};
 use super::policy::{GrowthConfig, GrowthStrategy, NeuronGrowthConfig};
 use super::rng::Rng64;
 use super::topology::{NeuronId, NeuronRole, SynapseId};
@@ -45,7 +45,10 @@ pub fn propose_grow_synapses<T: Scalar>(
                 continue;
             }
         }
-        if topo.check_add_synapse(src, dst, c.delay, None).is_err() {
+        if topo
+            .check_add_synapse(src, dst, c.delay, None, SynapseModel::CurrentBased)
+            .is_err()
+        {
             continue;
         }
         let w = c.init_weight * (T::ONE + c.weight_jitter * rng.symmetric_as::<T>());
@@ -191,6 +194,7 @@ pub fn propose_grow_neuron<T: Scalar>(
                     dsts.into_iter().map(|(id, _)| (id, w(rng))).collect();
                 let model = cfg
                     .new_neuron_model
+                    .clone()
                     .unwrap_or_else(|| cfg.new_neuron_params.into());
                 return Some((
                     StructuralAction::AddNeuron {

@@ -28,6 +28,7 @@
 
 use crate::state::ResetMode;
 
+use super::custom::{CustomNeuronInstance, CustomStateEntryBox, NeuronStepContext};
 use super::error::{StructuralError, StructuralResult};
 use crate::scalar::Scalar;
 
@@ -85,20 +86,15 @@ impl NeuronRole {
 /// * [`Inhibitory`](Self::Inhibitory) - the weight sign is reversed;
 /// * [`Modulatory`](Self::Modulatory) - the weight does not go directly into the current, but
 ///   increases the damping gain of the receiver (`modulation`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum NeuronPolarity {
     /// Excitatory neuron.
+    #[default]
     Excitatory,
     /// Inhibitory neuron.
     Inhibitory,
     /// Modulating neuron (strengthens the receiver current, rather than creating its own).
     Modulatory,
-}
-
-impl Default for NeuronPolarity {
-    fn default() -> Self {
-        Self::Excitatory
-    }
 }
 
 impl NeuronPolarity {
@@ -612,6 +608,25 @@ pub struct HodgkinHuxleyState<T = f32> {
     pub above: bool,
 }
 
+/// Family of builtin models that supports the online local eligibility
+/// dynamics of the plasticity system (see [`structural::eprop`](super::eprop)).
+///
+/// The capability interface of a model:
+/// [`NeuronModel::online_eprop_family`] returns `Some(family)` when the
+/// model's law of dynamics admits a well-defined local eligibility rule,
+/// `None` otherwise (then the trainer returns
+/// [`StructuralError::UnsupportedEpropDynamics`](super::error::StructuralError::UnsupportedEpropDynamics)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnlineEpropFamily {
+    /// LIF (`U ← βU + I`, spike at `U ≥ θ`): eligibility factor is the
+    /// hard spike of the postsynaptic neuron.
+    Lif,
+    /// Adaptive LIF (`U ← βU + I − A`, `A ← ρA + a·spike`, spike at `U ≥ θ`):
+    /// see the derivation in [`structural::eprop`](super::eprop) (threshold
+    /// formulation `U + A ≥ θ + A`).
+    AdaptiveLif,
+}
+
 /// State transfer strategy when changing a neuron model.
 ///
 /// Changing a model is not only about replacing parameters: old variables can
@@ -676,8 +691,8 @@ impl StateMigration {
 /// and [`DynamicNetwork::change_neuron_model`](super::DynamicNetwork::change_neuron_model),
 /// so that the calling code can see what the state was before and what happened after
 /// chosen policy.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ModelSwitchOutcome<T = f32> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSwitchOutcome<T: Scalar = f32> {
     /// Model before modification.
     pub old_model: NeuronModel<T>,
     /// Model after change.
@@ -693,8 +708,10 @@ pub struct ModelSwitchOutcome<T = f32> {
 }
 
 /// The state of the neuron corresponding to the variant [`NeuronModel<T>`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NeuronState<T = f32> {
+///
+/// `Custom` holds the erased user state ([`CustomStateEntryBox`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NeuronState<T: Scalar = f32> {
     /// LIF.
     Lif(LifState<T>),
     /// ALIF.
@@ -705,6 +722,8 @@ pub enum NeuronState<T = f32> {
     AdEx(AdExState<T>),
     /// Hodgkin-Huxley.
     HodgkinHuxley(HodgkinHuxleyState<T>),
+    /// User-defined model state.
+    Custom(CustomStateEntryBox<T>),
 }
 
 impl<T: Scalar> Default for NeuronState<T> {
@@ -714,7 +733,26 @@ impl<T: Scalar> Default for NeuronState<T> {
 }
 
 impl<T: Scalar> NeuronState<T> {
+    /// Is the state of a user-defined model ([`NeuronModel::Custom`])?
+    pub fn is_custom(&self) -> bool {
+        matches!(self, NeuronState::Custom(_))
+    }
+
+    /// Same dynamics as `other`: for custom - equal model ids (and schema
+    /// versions of the owning models); for builtin - equal variant tags.
+    pub fn is_same_dynamics(&self, other: &NeuronState<T>) -> bool {
+        match (self, other) {
+            (NeuronState::Custom(a), NeuronState::Custom(b)) => {
+                a.inner().model_id() == b.inner().model_id()
+                    && a.inner().schema_version() == b.inner().schema_version()
+            }
+            _ => self.tag() == other.tag(),
+        }
+    }
+
     /// Membrane potential (for all models this is `mem` or `v`).
+    ///
+    /// For a custom model without a membrane, returns `T::ZERO`.
     pub fn mem(&self) -> T {
         match self {
             NeuronState::Lif(s) => s.mem,
@@ -722,6 +760,7 @@ impl<T: Scalar> NeuronState<T> {
             NeuronState::Izhikevich(s) => s.v,
             NeuronState::AdEx(s) => s.v,
             NeuronState::HodgkinHuxley(s) => s.v,
+            NeuronState::Custom(s) => s.inner().membrane().unwrap_or(T::ZERO),
         }
     }
 
@@ -733,6 +772,7 @@ impl<T: Scalar> NeuronState<T> {
             NeuronState::Izhikevich(s) => s.v = value,
             NeuronState::AdEx(s) => s.v = value,
             NeuronState::HodgkinHuxley(s) => s.v = value,
+            NeuronState::Custom(s) => s.inner_mut().set_membrane(value),
         }
     }
 
@@ -746,6 +786,7 @@ impl<T: Scalar> NeuronState<T> {
             NeuronState::HodgkinHuxley(s) => {
                 s.v.is_finite() && s.m.is_finite() && s.h.is_finite() && s.n.is_finite()
             }
+            NeuronState::Custom(s) => s.inner().is_finite(),
         }
     }
 
@@ -762,23 +803,71 @@ impl<T: Scalar> NeuronState<T> {
     /// here behaves like `Compatible`; to convert units use
     /// [`NeuronState::migrate_between`].
     pub fn migrate_to(self, target: &NeuronModel<T>, policy: StateMigration) -> NeuronState<T> {
-        let init = target.init_state();
-        match policy {
-            StateMigration::Reset => init,
-            StateMigration::Membrane => {
-                let mut next = init;
-                next.set_mem(self.mem());
+        match (self, target, policy) {
+            (_, _, StateMigration::Reset) => target.init_state(),
+            // Custom target, Membrane: membrane-only transfer.
+            (NeuronState::Custom(entry), NeuronModel::Custom(cm), StateMigration::Membrane) => {
+                let mut s = cm.adapter.init_state();
+                if let Some(m) = entry.inner().membrane() {
+                    cm.adapter.set_mem(&mut *s, m);
+                }
+                NeuronState::Custom(CustomStateEntryBox::from_boxed(s))
+            }
+            // Custom target, Compatible/Scaled: user hook.
+            (
+                NeuronState::Custom(entry),
+                NeuronModel::Custom(cm),
+                StateMigration::Compatible | StateMigration::Scaled,
+            ) => match cm.adapter.migrate_state(entry.inner(), policy) {
+                Ok(s) => NeuronState::Custom(CustomStateEntryBox::from_boxed(s)),
+                Err(_) => target.init_state(),
+            },
+            // Builtin target, custom source: membrane-only transfer
+            // (the builtin membrane is the natural common quantity).
+            (
+                NeuronState::Custom(entry),
+                target @ (NeuronModel::Lif(_) | NeuronModel::AdaptiveLif(_)),
+                StateMigration::Membrane | StateMigration::Compatible | StateMigration::Scaled,
+            ) => {
+                let mut s = target.init_state();
+                s.set_mem(entry.inner().membrane().unwrap_or(T::ZERO));
+                s
+            }
+            (
+                NeuronState::Custom(entry),
+                target @ (NeuronModel::Izhikevich(_) | NeuronModel::HodgkinHuxley(_)),
+                StateMigration::Membrane | StateMigration::Compatible | StateMigration::Scaled,
+            ) => {
+                let mut s = target.init_state();
+                s.set_mem(entry.inner().membrane().unwrap_or(T::ZERO));
+                s
+            }
+            // Builtin -> custom target: membrane-only transfer.
+            (
+                NeuronState::Lif(s),
+                NeuronModel::Custom(cm),
+                StateMigration::Membrane | StateMigration::Compatible | StateMigration::Scaled,
+            ) => {
+                let mut st = cm.adapter.init_state();
+                cm.adapter.set_mem(&mut *st, s.mem);
+                NeuronState::Custom(CustomStateEntryBox::from_boxed(st))
+            }
+            // General: Membrane transfer as-is.
+            (s, target, StateMigration::Membrane) => {
+                let mut next = target.init_state();
+                next.set_mem(s.mem());
                 next
             }
-            StateMigration::Compatible | StateMigration::Scaled => {
-                if self.matches(target) {
-                    self
-                } else if state_family(self.tag()) == state_family(target.tag()) {
-                    let mut next = init;
-                    next.set_mem(self.mem());
+            // General: Compatible/Scaled for builtin→builtin (original semantics).
+            (s, target, _) => {
+                if s.matches(target) {
+                    s
+                } else if state_family(s.tag()) == state_family(target.tag()) {
+                    let mut next = target.init_state();
+                    next.set_mem(s.mem());
                     next
                 } else {
-                    init
+                    target.init_state()
                 }
             }
         }
@@ -829,6 +918,9 @@ impl<T: Scalar> NeuronState<T> {
                 s.n = n;
                 s.above = false;
             }
+            (NeuronState::Custom(s), NeuronModel::Custom(cm)) => {
+                cm.adapter.set_mem(s.inner_mut(), v)
+            }
             _ => next.set_mem(v),
         }
         next
@@ -836,14 +928,17 @@ impl<T: Scalar> NeuronState<T> {
 
     /// Does the state variant match the model?
     pub fn matches(&self, model: &NeuronModel<T>) -> bool {
-        matches!(
-            (self, model),
+        match (self, model) {
             (NeuronState::Lif(_), NeuronModel::Lif(_))
-                | (NeuronState::AdaptiveLif(_), NeuronModel::AdaptiveLif(_))
-                | (NeuronState::Izhikevich(_), NeuronModel::Izhikevich(_))
-                | (NeuronState::AdEx(_), NeuronModel::AdEx(_))
-                | (NeuronState::HodgkinHuxley(_), NeuronModel::HodgkinHuxley(_))
-        )
+            | (NeuronState::AdaptiveLif(_), NeuronModel::AdaptiveLif(_))
+            | (NeuronState::Izhikevich(_), NeuronModel::Izhikevich(_))
+            | (NeuronState::AdEx(_), NeuronModel::AdEx(_))
+            | (NeuronState::HodgkinHuxley(_), NeuronModel::HodgkinHuxley(_)) => true,
+            (NeuronState::Custom(entry), NeuronModel::Custom(cm)) => {
+                entry.inner().model_id() == cm.model_id()
+            }
+            _ => false,
+        }
     }
 
     /// Variant tag (same as model tag).
@@ -854,6 +949,7 @@ impl<T: Scalar> NeuronState<T> {
             NeuronState::Izhikevich(_) => 2,
             NeuronState::AdEx(_) => 3,
             NeuronState::HodgkinHuxley(_) => 4,
+            NeuronState::Custom(_) => 5,
         }
     }
 }
@@ -865,8 +961,11 @@ fn state_family(tag: u8) -> u8 {
 }
 
 /// Law of neuron dynamics.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NeuronModel<T = f32> {
+///
+/// Builtin variants keep the historic semantics; `Custom` carries a user-defined
+/// model (see [`structural::custom`](super::custom)).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NeuronModel<T: Scalar = f32> {
     /// Leaky integrate-and-fire.
     Lif(LifParams<T>),
     /// Adaptive LIF.
@@ -877,6 +976,8 @@ pub enum NeuronModel<T = f32> {
     AdEx(AdExParams<T>),
     /// Hodgkin–Huxley.
     HodgkinHuxley(HodgkinHuxleyParams<T>),
+    /// User-defined dynamic model.
+    Custom(CustomNeuronInstance<T>),
 }
 
 /// Continuous physical parameter of the neuron model.
@@ -1085,8 +1186,26 @@ impl<T: Scalar> From<HodgkinHuxleyParams<T>> for NeuronModel<T> {
     }
 }
 
+impl<T: Scalar> From<CustomNeuronInstance<T>> for NeuronModel<T> {
+    fn from(cm: CustomNeuronInstance<T>) -> Self {
+        Self::Custom(cm)
+    }
+}
+
 impl<T: Scalar> NeuronModel<T> {
-    /// Short model name.
+    /// Capability interface for online local eligibility dynamics:
+    /// `Some(family)` for models with a supported law of dynamics
+    /// ([`OnlineEpropFamily::Lif`] for LIF, [`OnlineEpropFamily::AdaptiveLif`]
+    /// for Adaptive LIF), `None` otherwise.
+    pub fn online_eprop_family(&self) -> Option<OnlineEpropFamily> {
+        match self {
+            NeuronModel::Lif(_) => Some(OnlineEpropFamily::Lif),
+            NeuronModel::AdaptiveLif(_) => Some(OnlineEpropFamily::AdaptiveLif),
+            _ => None,
+        }
+    }
+
+    /// Short model name (`"custom"` for user models).
     pub fn as_str(&self) -> &'static str {
         match self {
             NeuronModel::Lif(_) => "lif",
@@ -1094,6 +1213,34 @@ impl<T: Scalar> NeuronModel<T> {
             NeuronModel::Izhikevich(_) => "izhikevich",
             NeuronModel::AdEx(_) => "adex",
             NeuronModel::HodgkinHuxley(_) => "hodgkin_huxley",
+            NeuronModel::Custom(_) => "custom",
+        }
+    }
+
+    /// Display name: builtin name or the stable user model id (`"custom/my_neuron"`).
+    pub fn display_name(&self) -> String {
+        match self {
+            NeuronModel::Custom(cm) => cm.model_id().to_string(),
+            other => other.as_str().to_string(),
+        }
+    }
+
+    /// Stable user model id (`None` for builtin models).
+    pub fn custom_model_id(&self) -> Option<&'static str> {
+        match self {
+            NeuronModel::Custom(cm) => Some(cm.model_id()),
+            _ => None,
+        }
+    }
+
+    /// Are the dynamics equal: same model id + schema version for custom,
+    /// variant equality for builtin (states may differ by policy).
+    pub fn is_same_dynamics(&self, other: &NeuronModel<T>) -> bool {
+        match (self, other) {
+            (NeuronModel::Custom(a), NeuronModel::Custom(b)) => {
+                a.model_id() == b.model_id() && a.schema_version() == b.schema_version()
+            }
+            (a, b) => a == b,
         }
     }
 
@@ -1105,6 +1252,7 @@ impl<T: Scalar> NeuronModel<T> {
             NeuronModel::Izhikevich(_) => 2,
             NeuronModel::AdEx(_) => 3,
             NeuronModel::HodgkinHuxley(_) => 4,
+            NeuronModel::Custom(_) => 5,
         }
     }
 
@@ -1131,6 +1279,12 @@ impl<T: Scalar> NeuronModel<T> {
         match self {
             NeuronModel::Lif(p) => p.beta = beta,
             NeuronModel::AdaptiveLif(p) => p.beta = beta,
+            NeuronModel::Custom(cm) => {
+                return Err(StructuralError::UnsupportedParameter {
+                    kind: cm.model_id(),
+                    parameter: "beta",
+                });
+            }
             other => {
                 return Err(StructuralError::UnsupportedParameter {
                     kind: other.as_str(),
@@ -1192,6 +1346,12 @@ impl<T: Scalar> NeuronModel<T> {
         match self {
             NeuronModel::Lif(p) => p.reset = reset,
             NeuronModel::AdaptiveLif(p) => p.reset = reset,
+            NeuronModel::Custom(cm) => {
+                return Err(StructuralError::UnsupportedParameter {
+                    kind: cm.model_id(),
+                    parameter: "reset",
+                });
+            }
             other => {
                 return Err(StructuralError::UnsupportedParameter {
                     kind: other.as_str(),
@@ -1210,6 +1370,7 @@ impl<T: Scalar> NeuronModel<T> {
             NeuronModel::Izhikevich(p) => p.validate(),
             NeuronModel::AdEx(p) => p.validate(),
             NeuronModel::HodgkinHuxley(p) => p.validate(),
+            NeuronModel::Custom(cm) => cm.validate(lim),
         }
     }
 
@@ -1253,6 +1414,8 @@ impl<T: Scalar> NeuronModel<T> {
                 p.dt = p.dt.max(T::c(1e-6));
                 p.substeps = p.substeps.clamp(1, 10_000);
             }
+            // Custom models clamp themselves in `validate`/`set_param`.
+            NeuronModel::Custom(_) => {}
         }
     }
 
@@ -1261,6 +1424,9 @@ impl<T: Scalar> NeuronModel<T> {
         match self {
             NeuronModel::Lif(_) => NeuronState::Lif(LifState::default()),
             NeuronModel::AdaptiveLif(_) => NeuronState::AdaptiveLif(AdaptiveLifState::default()),
+            NeuronModel::Custom(cm) => {
+                NeuronState::Custom(CustomStateEntryBox::from_boxed(cm.adapter.init_state()))
+            }
             NeuronModel::Izhikevich(p) => {
                 NeuronState::Izhikevich(IzhikevichState { v: p.c, u: T::ZERO })
             }
@@ -1302,18 +1468,25 @@ impl<T: Scalar> NeuronModel<T> {
             NeuronModel::Izhikevich(p) => (p.c, p.threshold),
             NeuronModel::AdEx(p) => (p.e_l, p.v_t),
             NeuronModel::HodgkinHuxley(p) => (p.v_rest, p.spike_threshold),
+            NeuronModel::Custom(cm) => return cm.adapter.membrane_range(),
         };
         (rest.is_finite() && fire.is_finite() && fire > rest).then_some((rest, fire))
     }
 
-    /// Current threshold (for homeostasis).
+    /// Current threshold (for homeostasis); `T::ZERO` for custom models without one.
     pub fn threshold(&self) -> T {
+        self.threshold_opt().unwrap_or(T::ZERO)
+    }
+
+    /// Current threshold if the model has one.
+    pub fn threshold_opt(&self) -> Option<T> {
         match self {
-            NeuronModel::Lif(p) => p.threshold,
-            NeuronModel::AdaptiveLif(p) => p.threshold,
-            NeuronModel::Izhikevich(p) => p.threshold,
-            NeuronModel::AdEx(p) => p.v_peak,
-            NeuronModel::HodgkinHuxley(p) => p.spike_threshold,
+            NeuronModel::Lif(p) => Some(p.threshold),
+            NeuronModel::AdaptiveLif(p) => Some(p.threshold),
+            NeuronModel::Izhikevich(p) => Some(p.threshold),
+            NeuronModel::AdEx(p) => Some(p.v_peak),
+            NeuronModel::HodgkinHuxley(p) => Some(p.spike_threshold),
+            NeuronModel::Custom(cm) => cm.adapter.threshold(),
         }
     }
 
@@ -1343,6 +1516,7 @@ impl<T: Scalar> NeuronModel<T> {
                 p.spike_threshold = value;
                 p.spike_threshold
             }
+            NeuronModel::Custom(_) => self.threshold(),
         }
     }
 
@@ -1385,11 +1559,43 @@ impl<T: Scalar> NeuronModel<T> {
     }
 
     /// All continuous physical parameters supported by the model.
+    ///
+    /// For custom models - the parameters they expose via `DynamicNeuronModel`
+    /// (adapter `params`); named string-id parameters are not included
+    /// (see [`NeuronModel::custom_params`]).
     pub fn params(&self) -> Vec<(NeuronParam, T)> {
-        NeuronParam::ALL
-            .iter()
-            .filter_map(|p| self.param(*p).map(|v| (*p, v)))
-            .collect()
+        match self {
+            NeuronModel::Custom(cm) => cm.params(),
+            _ => NeuronParam::ALL
+                .iter()
+                .filter_map(|p| self.param(*p).map(|v| (*p, v)))
+                .collect(),
+        }
+    }
+
+    /// Named parameters of a custom model (string ids), if any.
+    pub fn custom_params(&self) -> Vec<super::custom::CustomParameter<T>> {
+        match self {
+            NeuronModel::Custom(cm) => cm.adapter.custom_params(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Current value of a named custom parameter of a custom model (None - not supported).
+    pub fn get_custom_param(&self, id: &str) -> Option<T> {
+        match self {
+            NeuronModel::Custom(cm) => cm.adapter.get_custom_param(id),
+            _ => None,
+        }
+    }
+
+    /// Write a named custom parameter of a custom model; returns the actual value
+    /// (None - unsupported or not a custom model).
+    pub fn set_custom_param(&mut self, id: &str, value: T) -> Option<T> {
+        match self {
+            NeuronModel::Custom(cm) => cm.adapter.set_custom_param(id, value),
+            _ => None,
+        }
     }
 
     /// Write a continuous physical parameter with a clamp into the allowable
@@ -1405,6 +1611,15 @@ impl<T: Scalar> NeuronModel<T> {
         value: T,
         lim: &ParamLimits<T>,
     ) -> StructuralResult<T> {
+        if let NeuronModel::Custom(cm) = self {
+            return match cm.adapter.set_param(param, value) {
+                Some(actual) => Ok(actual),
+                None => Err(StructuralError::UnsupportedParameter {
+                    kind: "custom",
+                    parameter: param.as_str(),
+                }),
+            };
+        }
         if !value.is_finite() {
             return Err(StructuralError::param(param.as_str(), "non-numeric value"));
         }
@@ -1463,26 +1678,37 @@ impl<T: Scalar> NeuronModel<T> {
 
     /// One step of dynamics. Returns whether there was a spike.
     ///
+    /// Errors of user-defined models are surfaced here (the network step
+    /// returns `StructuralResult`).
+    ///
     /// If the state variant does not match the model (should not happen
     /// after `Topology::validate`), the state is reinitialized, and the step
     /// is considered without a spike - the network does not panic.
-    pub fn step(&self, state: &mut NeuronState<T>, current: T) -> bool {
+    pub fn step(
+        &self,
+        state: &mut NeuronState<T>,
+        current: T,
+        ctx: &NeuronStepContext<T>,
+    ) -> StructuralResult<bool> {
         match (self, &mut *state) {
-            (NeuronModel::Lif(p), NeuronState::Lif(s)) => lif_step(p, s, current),
+            (NeuronModel::Lif(p), NeuronState::Lif(s)) => Ok(lif_step(p, s, current)),
             (NeuronModel::AdaptiveLif(p), NeuronState::AdaptiveLif(s)) => {
-                adaptive_lif_step(p, s, current)
+                Ok(adaptive_lif_step(p, s, current))
             }
             (NeuronModel::Izhikevich(p), NeuronState::Izhikevich(s)) => {
-                izhikevich_step(p, s, current)
+                Ok(izhikevich_step(p, s, current))
             }
-            (NeuronModel::AdEx(p), NeuronState::AdEx(s)) => adex_step(p, s, current),
+            (NeuronModel::AdEx(p), NeuronState::AdEx(s)) => Ok(adex_step(p, s, current)),
             (NeuronModel::HodgkinHuxley(p), NeuronState::HodgkinHuxley(s)) => {
-                hodgkin_huxley_step(p, s, current)
+                Ok(hodgkin_huxley_step(p, s, current))
+            }
+            (NeuronModel::Custom(cm), NeuronState::Custom(entry)) => {
+                cm.adapter.step(current, entry.inner_mut(), ctx)
             }
             _ => {
                 debug_assert!(false, "the state does not correspond to the neuron model");
                 *state = self.init_state();
-                false
+                Ok(false)
             }
         }
     }
@@ -1526,7 +1752,7 @@ fn izhikevich_step<T: Scalar>(
     s: &mut IzhikevichState<T>,
     current: T,
 ) -> bool {
-    let dt = T::ONE / T::from_usize(p.substeps.max(1) as usize);
+    let dt = T::ONE / T::from_usize(p.substeps.max(1));
     for _ in 0..p.substeps {
         let dv = T::c(0.04) * s.v * s.v + T::c(5.0) * s.v + T::c(140.0) - s.u + current;
         s.v += dv * dt;
@@ -1546,7 +1772,7 @@ fn izhikevich_step<T: Scalar>(
 }
 
 fn adex_step<T: Scalar>(p: &AdExParams<T>, s: &mut AdExState<T>, current: T) -> bool {
-    let dt = p.dt / T::from_usize(p.substeps.max(1) as usize);
+    let dt = p.dt / T::from_usize(p.substeps.max(1));
     let inv_c = T::ONE / p.c;
     let inv_delta = T::ONE / p.delta_t;
     let mut fired = false;
@@ -1577,7 +1803,7 @@ fn hodgkin_huxley_step<T: Scalar>(
     s: &mut HodgkinHuxleyState<T>,
     current: T,
 ) -> bool {
-    let dt = p.dt / T::from_usize(p.substeps.max(1) as usize);
+    let dt = p.dt / T::from_usize(p.substeps.max(1));
     let inv_c = T::ONE / p.c;
     let mut fired = false;
     for _ in 0..p.substeps {
@@ -1618,6 +1844,11 @@ fn gate_update<T: Scalar>(x: T, alpha: T, beta: T, dt: T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::structural::topology::NeuronId;
+
+    fn ctx() -> NeuronStepContext<f32> {
+        NeuronStepContext::manual(NeuronId(0), 0, 0)
+    }
 
     #[test]
     fn model_state_variants_match() {
@@ -1641,9 +1872,9 @@ mod tests {
         let p = LifParams::new(0.5, 1.0);
         let model = NeuronModel::Lif(p);
         let mut state = NeuronState::Lif(LifState::default());
-        assert!(!model.step(&mut state, 0.4));
+        assert!(!model.step(&mut state, 0.4, &ctx()).unwrap());
         // step with current 1.0: mem = 0.5*0.4 + 1.0 = 1.2 → spike, reset Subtract
-        assert!(model.step(&mut state, 1.0));
+        assert!(model.step(&mut state, 1.0, &ctx()).unwrap());
         let NeuronState::Lif(s) = state else {
             unreachable!()
         };
@@ -1661,13 +1892,21 @@ mod tests {
         };
         let mut s = AdaptiveLifState::default();
         let mut state = NeuronState::AdaptiveLif(s);
-        assert!(NeuronModel::AdaptiveLif(p).step(&mut state, 1.0));
+        assert!(
+            NeuronModel::AdaptiveLif(p)
+                .step(&mut state, 1.0, &ctx())
+                .unwrap()
+        );
         if let NeuronState::AdaptiveLif(st) = state {
             assert!((st.adaptation - 0.5).abs() < 1e-6);
             s = st;
         }
         // without input, adaptation inhibits the membrane and gradually fades
-        assert!(!NeuronModel::AdaptiveLif(p).step(&mut NeuronState::AdaptiveLif(s), 0.0));
+        assert!(
+            !NeuronModel::AdaptiveLif(p)
+                .step(&mut NeuronState::AdaptiveLif(s), 0.0, &ctx())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1677,7 +1916,7 @@ mod tests {
         let model = NeuronModel::Izhikevich(p);
         let mut fired = 0;
         for _ in 0..200 {
-            if model.step(&mut state, 10.0) {
+            if model.step(&mut state, 10.0, &ctx()).unwrap() {
                 fired += 1;
             }
             assert!(state.is_finite());
@@ -1692,7 +1931,7 @@ mod tests {
         let mut state = model.init_state();
         let mut fired = 0;
         for _ in 0..400 {
-            if model.step(&mut state, 1000.0) {
+            if model.step(&mut state, 1000.0, &ctx()).unwrap() {
                 fired += 1;
             }
             assert!(state.is_finite());
@@ -1707,7 +1946,7 @@ mod tests {
         let mut state = model.init_state();
         let mut fired = 0;
         for _ in 0..200 {
-            if model.step(&mut state, 10.0) {
+            if model.step(&mut state, 10.0, &ctx()).unwrap() {
                 fired += 1;
             }
             assert!(state.is_finite());

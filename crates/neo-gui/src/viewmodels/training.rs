@@ -208,6 +208,7 @@ struct RenderKey {
     height: u32,
     scale_bits: u32,
     /// The network view's camera and selected neuron; `None` on the other tabs.
+    #[allow(clippy::type_complexity)]
     net: Option<([u32; 5], Option<(usize, usize)>)>,
     palette: Palette,
 }

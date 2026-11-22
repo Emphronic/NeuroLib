@@ -542,8 +542,8 @@ mod tests {
         assert!((mean - 2.3).abs() < 0.03, "stochastic mean={mean}");
         // And each weight fell on exactly one of the two adjacent codes.
         assert!(stochastic[1..].iter().all(|&v| v == 2.0 || v == 3.0));
-        assert!(stochastic[1..].iter().any(|&v| v == 2.0));
-        assert!(stochastic[1..].iter().any(|&v| v == 3.0));
+        assert!(stochastic[1..].contains(&2.0));
+        assert!(stochastic[1..].contains(&3.0));
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub use crate::layers::{
     StdpConv2d, StdpConv2dConfig, StdpConv2dRecord, StdpConv2dState, StdpHyper, StdpLinear,
     StdpLinearConfig, StdpLinearRecord, StdpRule, StdpState, SynapticDelay, SynapticDelayConfig,
 };
+pub use crate::neuron::ThresholdDistribution;
 pub use crate::neuron::{
     AdEx, AdExConfig, AdExPreset, AdExState, AdaptiveLeaky, AdaptiveLeakyConfig, Alpha,
     GradedLeaky, GradedLeakyConfig, HodgkinHuxley, HodgkinHuxleyConfig, HodgkinHuxleyState,
@@ -61,6 +62,13 @@ pub use crate::neuron::{
     apply_graded_spikes, expand_levels, hh_rates, hh_rates_f32, hh_steady_state,
     hh_steady_state_as, multi_level_spike, spike_with_scalar_threshold, spike_with_threshold,
     split_ternary, split_time,
+};
+pub use crate::neuron::{
+    StochasticThresholdLeaky, StochasticThresholdLeakyConfig, StochasticThresholdState,
+};
+pub use crate::probabilistic::{
+    ProbabilityState, RateEstimate, RngSource, ThresholdPosterior, expected_calibration_error,
+    forward_seq_prob, rate_estimate, spike_nll,
 };
 pub use crate::quant::{StateQuant, StateQuantScheme};
 pub use crate::reservoir::{
@@ -80,8 +88,16 @@ pub use crate::state::{
 /// trait, only needed so that `Stateful::detach_hidden` is available without
 /// explicit `use neo_snn::stateful::Detach`.
 pub use crate::stateful::{Detach, Stateful, StatefulRecurrent};
+pub use crate::structural::analysis::{
+    ActivityHistory, CausalValidation, ConnectivityEstimate, ConnectivityEstimator,
+    ReconstructedConnectivity, SpectralConnectivity, validate_causal,
+};
 pub use crate::surrogate::{
     ATan, FastSigmoid, Heaviside, LeakySpikeOperator, SigmoidSurrogate, SparseFastSigmoid,
     SpikeOperator, SpikeRateEscape, StochasticSpikeOperator, StraightThrough, Surrogate,
     Triangular,
+};
+pub use crate::temporal::{
+    DualMemoryConfig, DualMemoryLayer, DualMemoryState, FastState, MemoryFeedback, SlowMemory,
+    SlowMemoryConfig, SlowMemoryState,
 };

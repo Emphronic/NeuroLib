@@ -74,6 +74,7 @@ mod tests {
         assert_eq!(table[0], 0);
     }
 
+    #[allow(clippy::identity_op)]
     #[test]
     fn test_table_for_non_contiguous_layout() {
         use crate::neuro::probe::{Position3D, SensorSite};

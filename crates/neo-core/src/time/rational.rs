@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn fractional_rates_round_trip_exactly() {
-        for hz in [24_414.0625, 30_000.12, 2_500.0, 30_000.0] {
+        for hz in [24_414.062_5, 30_000.12, 2_500.0, 30_000.0] {
             let rate = SampleRate::new(hz).unwrap();
             let one_hour = (hz * 3600.0).round() as u64;
             for s in [0, 1, 12_345, one_hour - 1, one_hour, 10 * one_hour + 7] {
@@ -121,7 +121,7 @@ mod tests {
             }
         }
         // 1 h at the TDT rate is exactly 3600 s (the old integer rate drifted ~9 ms).
-        let tdt = SampleRate::new(24_414.0625).unwrap();
+        let tdt = SampleRate::new(24_414.062_5).unwrap();
         assert_eq!(
             RationalTime::from_samples(87_890_625, tdt).unwrap(),
             RationalTime::new(3600, 1).unwrap()

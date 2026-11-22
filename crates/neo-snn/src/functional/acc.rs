@@ -125,10 +125,10 @@ pub fn accuracy_temporal(spikes: Tensor<3>, targets: &[usize]) -> f32 {
                 }
             }
         }
-        if let Some((c, _)) = best {
-            if c == target {
-                correct += 1;
-            }
+        if let Some((c, _)) = best
+            && c == target
+        {
+            correct += 1;
         }
     }
     correct as f32 / times.len().max(1) as f32
@@ -153,7 +153,7 @@ pub fn accuracy_temporal(spikes: Tensor<3>, targets: &[usize]) -> f32 {
 pub fn population_spike_counts(spikes: Tensor<3>, neurons_per_class: usize) -> Vec<Vec<f32>> {
     let classes_total = spikes.dims()[2];
     assert!(
-        neurons_per_class >= 1 && classes_total % neurons_per_class == 0,
+        neurons_per_class >= 1 && classes_total.is_multiple_of(neurons_per_class),
         "population_spike_counts: number of neurons {classes_total} must be divisible by neurons_per_class = {neurons_per_class} (>= 1)"
     );
     let per_neuron = spike_counts(spikes);
@@ -260,10 +260,10 @@ pub fn population_accuracy_temporal(
                 }
             }
         }
-        if let Some((c, _)) = best {
-            if c == target {
-                correct += 1;
-            }
+        if let Some((c, _)) = best
+            && c == target
+        {
+            correct += 1;
         }
     }
     correct as f32 / times.len().max(1) as f32

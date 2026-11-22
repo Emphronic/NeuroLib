@@ -99,7 +99,7 @@ impl ActionKind {
 
 /// Structural action.
 #[derive(Debug, Clone, PartialEq)]
-pub enum StructuralAction<T = f32> {
+pub enum StructuralAction<T: Scalar> {
     /// Create a synapse.
     AddSynapse {
         /// Source.
@@ -185,7 +185,7 @@ pub enum StructuralAction<T = f32> {
     },
 }
 
-impl<T> StructuralAction<T> {
+impl<T: Scalar> StructuralAction<T> {
     /// Operation type.
     pub fn kind(&self) -> ActionKind {
         match self {
@@ -243,7 +243,7 @@ impl<T: Scalar> fmt::Display for StructuralAction<T> {
             } => write!(
                 f,
                 "change_neuron_model {id} → {} [{}]",
-                model.as_str(),
+                model.display_name(),
                 migration.as_str()
             ),
         }
@@ -548,8 +548,13 @@ pub fn apply_action<T: Scalar>(
             dsts,
         } => {
             let (n, ss) = net.topology_mut().transaction(|t| {
-                let n =
-                    t.add_neuron_with(NeuronRole::Hidden, *polarity, *model, Origin::Grown, b)?;
+                let n = t.add_neuron_with(
+                    NeuronRole::Hidden,
+                    *polarity,
+                    model.clone(),
+                    Origin::Grown,
+                    b,
+                )?;
                 let mut ids = Vec::new();
                 for (s, w) in srcs {
                     ids.push(t.add_synapse(*s, n, *w, 0, Origin::Grown, b)?);
@@ -585,7 +590,7 @@ pub fn apply_action<T: Scalar>(
             model,
             migration,
         } => {
-            net.change_neuron_model(*id, *model, *migration)?;
+            net.change_neuron_model(*id, model.clone(), *migration)?;
         }
     }
     Ok(eff)

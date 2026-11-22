@@ -46,6 +46,7 @@
 //! there are no steps in the recurrent sense, each call is a pure function of
 //! membrane potential at the input).
 
+pub mod adaptive_routing;
 mod block;
 mod mlp;
 mod spike_driven_self_attention;

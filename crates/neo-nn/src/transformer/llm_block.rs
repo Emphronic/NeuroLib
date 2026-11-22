@@ -155,10 +155,10 @@ impl LlmBlockConfig {
         if self.max_seq_len == 0 {
             return Err("max_seq_len must be > 0".into());
         }
-        if !(self.rms_norm_eps > 0.0) || !self.rms_norm_eps.is_finite() {
+        if !(self.rms_norm_eps.is_finite() && self.rms_norm_eps > 0.0) {
             return Err("rms_norm_eps must be > 0".into());
         }
-        if !(self.rope_theta > 0.0) || !self.rope_theta.is_finite() {
+        if !(self.rope_theta.is_finite() && self.rope_theta > 0.0) {
             return Err("rope_theta must be > 0".into());
         }
         match (&self.ffn_kind, &self.moe) {
@@ -253,7 +253,7 @@ impl RotaryEmbedding {
     /// For odd/zero `head_dim`, zero `max_seq_len`, `theta <= 0`.
     pub fn new(theta: f32, max_seq_len: usize, head_dim: usize) -> Self {
         assert!(
-            head_dim > 0 && head_dim % 2 == 0,
+            head_dim > 0 && head_dim.is_multiple_of(2),
             "RoPE: head_dim ({head_dim}) must be even and > 0"
         );
         assert!(max_seq_len > 0, "RoPE: max_seq_len must be > 0");

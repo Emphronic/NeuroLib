@@ -345,10 +345,9 @@ impl StdpLinear {
             tau_post_slow,
             ..
         } = config.rule
+            && !(tau_pre_slow > 0.0 && tau_post_slow > 0.0)
         {
-            if !(tau_pre_slow > 0.0 && tau_post_slow > 0.0) {
-                return Err(bad("slow triplet constants STDP must be positive".into()));
-            }
+            return Err(bad("slow triplet constants STDP must be positive".into()));
         }
 
         Ok(Self {
@@ -727,8 +726,8 @@ pub struct StdpState {
     pub post_trace_slow: Option<Tensor<2>>,
     /// Eligibility trace (only for `RewardModulated`), `[out_features, in_features]`
     /// - the same shape as the weight, not the batch: co-activity is already averaged over
-    /// batch inside [`eligibility_trace_update`](crate::functional::plasticity::eligibility_trace_update),
-    /// as well as updating the weights of `Pair`/`Triplet`.
+    ///   batch inside [`eligibility_trace_update`](crate::functional::plasticity::eligibility_trace_update),
+    ///   as well as updating the weights of `Pair`/`Triplet`.
     pub eligibility: Option<Tensor<2>>,
 }
 
@@ -987,7 +986,7 @@ mod tests {
 
     /// The Triplet state must create slow traces; Pair/RewardModulated
     /// - no (otherwise unused tensors would waste memory on
-    /// each state step).
+    ///   each state step).
     #[test]
     fn zeros_allocates_slow_traces_only_for_triplet() {
         let device = dev();
@@ -1021,7 +1020,7 @@ mod tests {
 
     /// Panic when the number of input features and layer configuration do not match
     /// - the same contract as the rest of the crate layers (see.
-    /// `SynapticDelay::step`).
+    ///   `SynapticDelay::step`).
     #[test]
     #[should_panic(expected = "features")]
     fn step_panics_on_feature_mismatch() {

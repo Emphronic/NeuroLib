@@ -55,6 +55,7 @@ pub fn compute_autocorrelogram(
 
     for i in 0..n {
         let t_i = sorted_samples[i];
+        #[allow(clippy::needless_range_loop)]
         for j in (i + 1)..n {
             let dt_ms = ((sorted_samples[j].saturating_sub(t_i)) as f64 * ms_per_sample) as f32;
             if dt_ms >= max_lag_ms {
@@ -117,6 +118,7 @@ pub fn compute_crosscorrelogram(
             }
         }
 
+        #[allow(clippy::needless_range_loop)]
         for j in left_b..n_b {
             let dt_ms = ((sorted_samples_b[j] as f64 - t_a as f64) * ms_per_sample) as f32;
             if dt_ms >= max_lag_ms {

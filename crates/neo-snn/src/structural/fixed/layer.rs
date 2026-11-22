@@ -99,10 +99,10 @@ impl LayerSpec {
         if self.role == LayerRole::Output && self.initial_active != self.out_features {
             return bad("an output layer cannot have a reserve".into());
         }
-        if let Some(src) = self.input_from {
-            if src >= layers {
-                return bad(format!("input_from {src} outside 0..{layers}"));
-            }
+        if let Some(src) = self.input_from
+            && src >= layers
+        {
+            return bad(format!("input_from {src} outside 0..{layers}"));
         }
         Ok(())
     }

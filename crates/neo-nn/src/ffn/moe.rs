@@ -158,7 +158,7 @@ impl MoeConfig {
                 self.top_k, self.num_experts
             ));
         }
-        if !(self.capacity_factor > 0.0) {
+        if self.capacity_factor.is_nan() || self.capacity_factor <= 0.0 {
             return Err("moe.capacity_factor must be > 0".into());
         }
         Ok(())

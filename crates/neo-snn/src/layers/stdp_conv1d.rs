@@ -351,12 +351,11 @@ impl StdpConv1d {
             tau_post_slow,
             ..
         } = config.rule
+            && !(tau_pre_slow > 0.0 && tau_post_slow > 0.0)
         {
-            if !(tau_pre_slow > 0.0 && tau_post_slow > 0.0) {
-                return Err(bad(
-                    "the slow triplet STDP time constants must be positive".into()
-                ));
-            }
+            return Err(bad(
+                "the slow triplet STDP time constants must be positive".into()
+            ));
         }
 
         Ok(Self {
@@ -985,8 +984,7 @@ mod tests {
         let num_pos = layer.num_positions(window_length);
 
         // Step mode.
-        let mut state =
-            StdpConv1dState::with_kernel(&layer, &device, 1 * num_pos, init_kernel.clone());
+        let mut state = StdpConv1dState::with_kernel(&layer, &device, num_pos, init_kernel.clone());
         let mut step_out = Vec::with_capacity(n);
         for s in &steps {
             let x_t = t3(s.clone(), [1, 1, window_length]);
@@ -997,7 +995,7 @@ mod tests {
 
         // Sequential mode, same starting point.
         let flat: Vec<f32> = steps.iter().flat_map(|s| s.iter().copied()).collect();
-        let seq_state = StdpConv1dState::with_kernel(&layer, &device, 1 * num_pos, init_kernel);
+        let seq_state = StdpConv1dState::with_kernel(&layer, &device, num_pos, init_kernel);
         let (seq_spikes, seq_final_state) =
             layer.forward_sequence(t4(flat, [1, n, 1, window_length]), seq_state, &surrogate);
 
@@ -1124,7 +1122,7 @@ mod tests {
 
     /// The Triplet state must create slow traces; Pair/RewardModulated
     /// - no (same principle as `zeros_allocates_slow_traces_only_for_triplet`
-    /// y `StdpLinear`).
+    ///   y `StdpLinear`).
     #[test]
     fn zeros_allocates_slow_traces_only_for_triplet() {
         let device = dev();
@@ -1185,7 +1183,7 @@ mod tests {
         let state = layer.state_zeros(&device, 2, 4); // batch=2, length=4, k=2 -> num_pos=3
         assert_eq!(state.mem.dims(), [2 * 3, 3]);
 
-        let x = t3(vec![0.0; 2 * 1 * 4], [2, 1, 4]);
+        let x = t3(vec![0.0; 2 * 4], [2, 1, 4]);
         let (spikes, _) = layer.step(x, &state, &surrogate);
         assert_eq!(spikes.dims(), [2, 3, 3]); // [batch, out_ch, num_pos]
     }

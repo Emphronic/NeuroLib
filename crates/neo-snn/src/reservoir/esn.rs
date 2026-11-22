@@ -130,7 +130,7 @@ impl EchoStateNetworkConfig {
         if !(self.leak_rate > 0.0 && self.leak_rate <= 1.0) {
             return bad(format!("leak_rate ∈ (0, 1], obtained {}", self.leak_rate));
         }
-        if !(self.spectral_radius > 0.0) {
+        if self.spectral_radius.is_nan() || self.spectral_radius <= 0.0 {
             return bad(format!(
                 "spectral_radius must be > 0, obtained {}",
                 self.spectral_radius

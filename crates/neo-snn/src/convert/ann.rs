@@ -202,6 +202,7 @@ impl BatchNormParams {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 /// Source network layer.
 #[derive(Debug, Clone)]
 pub enum AnnLayer {

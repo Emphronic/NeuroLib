@@ -47,7 +47,7 @@ impl SpikingSelfAttentionConfig {
         assert!(dim > 0, "dim must be > 0");
         assert!(num_heads > 0, "num_heads must be > 0");
         assert!(
-            dim % num_heads == 0,
+            dim.is_multiple_of(num_heads),
             "dim({dim}) must be divisible by num_heads({num_heads})"
         );
         Self {

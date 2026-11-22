@@ -7,7 +7,7 @@
 //!   delivered per step, relative to the network median - weight in the estimate
 //!   not involved), in terms of sample coverage and contribution to the quality signal
 //!   (`credit_ema`);
-//! *item is only rated after minimum age **and** minimum
+//! * item is only rated after minimum age **and** minimum
 //!   observed samples, then no more often than `reeval_interval_steps`;
 //! * two-stage removal: first `DisableSynapse`, and only after
 //!   `grace_steps` - physical `RemoveSynapse`;
@@ -127,13 +127,14 @@ pub fn propose_prune_synapses<T: Scalar>(
     let step = net.step_count();
     let topo = net.topology();
     for s in topo.synapses() {
-        if let SynapseState::Disabled { since_step } = s.state {
-            if step.saturating_sub(since_step) >= cfg.grace_steps && out.len() < max_ops {
-                out.push((
-                    StructuralAction::RemoveSynapse { id: s.id },
-                    Reason::GraceElapsed,
-                ));
-            }
+        if let SynapseState::Disabled { since_step } = s.state
+            && step.saturating_sub(since_step) >= cfg.grace_steps
+            && out.len() < max_ops
+        {
+            out.push((
+                StructuralAction::RemoveSynapse { id: s.id },
+                Reason::GraceElapsed,
+            ));
         }
     }
     let active = topo.active_synapse_count();

@@ -39,12 +39,12 @@ fn mlp_store(c: Compression) -> Store {
         ..WriteOptions::default()
     };
     let mut w = StoreWriter::in_memory(opts).unwrap();
-    w.add_f32("fc1.weight", &[8, 4], TensorRole::Weight, &vec![0.1; 32])
+    w.add_f32("fc1.weight", &[8, 4], TensorRole::Weight, &[0.1; 32])
         .unwrap();
-    w.add_f32("fc1.bias", &[8], TensorRole::Bias, &vec![0.25; 8])
+    w.add_f32("fc1.bias", &[8], TensorRole::Bias, &[0.25; 8])
         .unwrap();
     lif_params(&mut w, "lif1", 8);
-    w.add_f32("fc2.weight", &[2, 8], TensorRole::Weight, &vec![0.2; 16])
+    w.add_f32("fc2.weight", &[2, 8], TensorRole::Weight, &[0.2; 16])
         .unwrap();
     let mut g = Graph::new();
     g.add_node(Node::input("in", &[4]))
@@ -130,14 +130,9 @@ fn compression_does_not_change_the_export() {
 #[test]
 fn conv_flatten_and_linear_get_nir_fields() {
     let mut w = StoreWriter::in_memory(WriteOptions::default()).unwrap();
-    w.add_f32(
-        "c.weight",
-        &[2, 1, 3, 3],
-        TensorRole::Weight,
-        &vec![0.5; 18],
-    )
-    .unwrap();
-    w.add_f32("fc.weight", &[3, 8], TensorRole::Weight, &vec![0.5; 24])
+    w.add_f32("c.weight", &[2, 1, 3, 3], TensorRole::Weight, &[0.5; 18])
+        .unwrap();
+    w.add_f32("fc.weight", &[3, 8], TensorRole::Weight, &[0.5; 24])
         .unwrap();
     let mut g = Graph::new();
     g.add_node(Node::input("in", &[1, 4, 4]))

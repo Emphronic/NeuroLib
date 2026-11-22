@@ -494,7 +494,7 @@ mod tests {
     /// is recalculated here explicitly using the same equations as in the layer,
     /// instead of relying on a constant hardcoded into the test by hand
     /// - this way the check does not become out of sync with the implementation when changing
-    /// `substeps`.
+    ///   `substeps`.
     #[test]
     fn post_spike_reset_matches_c_and_d() {
         let device = dev();

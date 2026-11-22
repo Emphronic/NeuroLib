@@ -254,7 +254,7 @@ impl NwbZarrRecording {
                         .map_err(read)?
                 } else {
                     self.data
-                        .retrieve_array_subset::<Vec<$t>>(&[samples.clone()])
+                        .retrieve_array_subset::<Vec<$t>>(&[samples])
                         .map_err(read)?
                 }
             };
@@ -313,7 +313,7 @@ impl RecordingSource for NwbZarrRecording {
             ])
         } else {
             self.data
-                .retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone()])
+                .retrieve_array_subset::<ArrayBytes<'static>>(&[samples])
         };
         let mut block = fetched
             .map_err(err)?

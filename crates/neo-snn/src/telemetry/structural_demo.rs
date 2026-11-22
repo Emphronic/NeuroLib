@@ -118,6 +118,7 @@ fn evaluate(net: &DynamicNetwork) -> (f32, f32) {
     )
 }
 
+#[allow(clippy::field_reassign_with_default)]
 /// Controller configuration for this task.
 pub fn structural_config(seed: u64) -> StructuralConfig {
     let mut c = StructuralConfig::default();

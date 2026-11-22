@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use super::super::custom::CustomNeuronRegistry;
 use super::super::error::{StructuralError, StructuralResult};
 use super::super::model::{LifParams, NeuronModel, NeuronPolarity, NeuronRole};
 use super::super::topology::{Birth, NeuronId, Origin, ParamLimits, Topology, TopologyLimits};
@@ -20,7 +21,7 @@ pub type Innov = u64;
 
 /// Neuron gene.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NodeGene<T = f32> {
+pub struct NodeGene<T: Scalar = f32> {
     /// Marker.
     pub innov: Innov,
     /// Role. Inputs and outputs exist in any genome and are not removed.
@@ -50,14 +51,14 @@ pub struct ConnGene<T = f32> {
 
 /// Genome. Genes are stored in ascending order of marker, markers are unique.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Genome<T = f32> {
+pub struct Genome<T: Scalar = f32> {
     /// Neuron genes.
     pub nodes: Vec<NodeGene<T>>,
     /// Synapse genes.
     pub conns: Vec<ConnGene<T>>,
 }
 
-impl<T> Default for Genome<T> {
+impl<T: Scalar> Default for Genome<T> {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
@@ -191,7 +192,7 @@ impl<T: Scalar> Genome<T> {
                 innov: (inputs + k) as Innov,
                 kind: NeuronRole::Output,
                 polarity: NeuronPolarity::Excitatory,
-                model: output_model,
+                model: output_model.clone(),
             });
         }
         Self {
@@ -395,7 +396,7 @@ impl<T: Scalar> Genome<T> {
         for n in &self.nodes {
             ids.insert(
                 n.innov,
-                t.add_neuron_with(n.kind, n.polarity, n.model, Origin::Initial, birth)?,
+                t.add_neuron_with(n.kind, n.polarity, n.model.clone(), Origin::Initial, birth)?,
             );
         }
         for c in self.conns.iter().filter(|c| c.enabled) {
@@ -431,7 +432,7 @@ impl<T: Scalar> Genome<T> {
                 innov,
                 kind: n.role,
                 polarity: n.polarity,
-                model: n.model,
+                model: n.model.clone(),
             });
         }
         nodes.sort_by_key(|n| n.innov);
@@ -454,13 +455,13 @@ impl<T: Scalar> Genome<T> {
         g
     }
 
-    pub(crate) fn write(&self, w: &mut W) {
+    pub(crate) fn write(&self, w: &mut W) -> StructuralResult<()> {
         w.len(self.nodes.len());
         for n in &self.nodes {
             w.u64(n.innov);
             w.u8(n.kind.code());
             w.u8(n.polarity.code());
-            w.model(&n.model);
+            w.model(&n.model)?;
         }
         w.len(self.conns.len());
         for c in &self.conns {
@@ -471,9 +472,14 @@ impl<T: Scalar> Genome<T> {
             w.u16(c.delay);
             w.bool(c.enabled);
         }
+        Ok(())
     }
 
-    pub(crate) fn read(r: &mut R, version: u32) -> StructuralResult<Self> {
+    pub(crate) fn read(
+        r: &mut R,
+        version: u32,
+        registry: &CustomNeuronRegistry<T>,
+    ) -> StructuralResult<Self> {
         let mut g = Genome::<T>::default();
         for _ in 0..r.len(MAX_ITEMS)? {
             let innov = r.u64()?;
@@ -482,7 +488,7 @@ impl<T: Scalar> Genome<T> {
             let (polarity, model) = if version >= 2 {
                 let polarity = NeuronPolarity::from_code(r.u8()?)
                     .ok_or_else(|| err("unknown neuron polarity"))?;
-                (polarity, r.model()?)
+                (polarity, r.model(registry)?)
             } else {
                 (NeuronPolarity::Excitatory, NeuronModel::Lif(r.lif::<T>()?))
             };
@@ -513,7 +519,7 @@ impl<T: Scalar> Genome<T> {
     /// Genome in bytes (`NGEN` magic). For `f32` - version 2 (values are 4 bytes, as before),
     /// for `f64` - version 3: after the version comes the width of the values (8) and the values without loss
     /// accuracy.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> StructuralResult<Vec<u8>> {
         let wide = std::mem::size_of::<T>() > 4;
         let mut w = W::with_width(wide);
         w.buf.extend_from_slice(b"NGEN");
@@ -523,14 +529,25 @@ impl<T: Scalar> Genome<T> {
         } else {
             w.u32(2);
         }
-        self.write(&mut w);
-        w.buf
+        self.write(&mut w)?;
+        Ok(w.buf)
     }
 
     /// Read the genome; version 1 (LIF only) migrates to the current one. Values are converted to `T`
     /// (`f64` → `f32` loses accuracy, `f32` → `f64` is accurate).
     /// Corrupt or unsupported data is an error.
+    ///
+    /// Without a registry, custom models are rejected with
+    /// [`StructuralError::UnknownCustomModel`].
     pub fn from_bytes(b: &[u8]) -> StructuralResult<Self> {
+        Self::from_bytes_with_registry(b, &CustomNeuronRegistry::new())
+    }
+
+    /// Like [`Genome::from_bytes`], with the [`CustomNeuronRegistry`] for user-defined models.
+    pub fn from_bytes_with_registry(
+        b: &[u8],
+        registry: &CustomNeuronRegistry<T>,
+    ) -> StructuralResult<Self> {
         if b.len() < 8 || &b[..4] != b"NGEN" {
             return Err(err("this is not a genome (no NGEN magic)"));
         }
@@ -546,7 +563,7 @@ impl<T: Scalar> Genome<T> {
                 x => return Err(err(format!("value width {x} is not supported"))),
             };
         }
-        let g = Self::read(&mut r, v)?;
+        let g = Self::read(&mut r, v, registry)?;
         if !r.finished() {
             return Err(err("extra data after the genome"));
         }

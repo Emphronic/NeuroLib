@@ -54,6 +54,7 @@ pub fn render_counts(req: &CountsRequest) -> (Frame, Vec<CurvePanel>) {
     let n = req.neurons.len();
     let gap = GAP / h as f32;
     let each = (1.0 - gap * 2.0) / 3.0;
+    #[allow(clippy::type_complexity)]
     let spec: [(&'static str, &[f32], Option<&[f32]>, usize, Pixel, bool); 3] = [
         (
             "Neurons",

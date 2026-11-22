@@ -116,7 +116,7 @@ fn disabled_synapses_become_disabled_genes() {
 fn serialization_round_trips_and_rejects_garbage() {
     let c = cfg(2, 2);
     let g = grown(&c, &mut tracker_for(&c), &mut Rng64::new(5), 25);
-    let bytes = g.to_bytes();
+    let bytes = g.to_bytes().unwrap();
     assert_eq!(Genome::<f32>::from_bytes(&bytes).unwrap(), g);
     assert!(
         Genome::<f32>::from_bytes(&bytes[..bytes.len() - 1]).is_err(),
@@ -525,14 +525,14 @@ fn save_and_load_continue_identically() {
     for _ in 0..6 {
         a.step(&mean_weight);
     }
-    let bytes = a.save();
+    let bytes = a.save().unwrap();
     let mut b = Population::load(&bytes, c.clone()).unwrap();
     assert_eq!(b.generation(), a.generation());
     assert_eq!(b.champion(), a.champion());
     for _ in 0..6 {
         assert_eq!(a.step(&mean_weight), b.step(&mean_weight));
     }
-    assert_eq!(a.save(), b.save());
+    assert_eq!(a.save().unwrap(), b.save().unwrap());
     let mut other = c.clone();
     other.population += 1;
     assert!(Population::load(&bytes, other).is_err());
@@ -727,7 +727,7 @@ fn genome_v2_roundtrips_model_and_polarity() {
         delay: 0,
         enabled: true,
     });
-    let bytes = g.to_bytes();
+    let bytes = g.to_bytes().unwrap();
     assert_eq!(&bytes[4..8], &2u32.to_le_bytes());
     let back = Genome::<f32>::from_bytes(&bytes).unwrap();
     assert_eq!(back, g);
@@ -859,20 +859,20 @@ fn f64_genome_roundtrips_without_precision_loss() {
         innov: 10,
         src: 0,
         dst: 2,
-        weight: 0.1234567890123456789,
+        weight: 0.123_456_789_012_345_68,
         delay: 1,
         enabled: true,
     });
-    let bytes = g.to_bytes();
+    let bytes = g.to_bytes().unwrap();
     let back = Genome::<f64>::from_bytes(&bytes).unwrap();
     assert_eq!(back, g);
-    assert_eq!(back.conns[0].weight, 0.1234567890123456789_f64);
+    assert_eq!(back.conns[0].weight, 0.123_456_789_012_345_68_f64);
     // f64 → f32: readable, but with loss of precision
     let narrow = Genome::<f32>::from_bytes(&bytes).unwrap();
-    assert_eq!(narrow.conns[0].weight, 0.1234567890123456789_f64 as f32);
+    assert_eq!(narrow.conns[0].weight, 0.123_456_789_012_345_68_f64 as f32);
     // f32 -> f64: version 2 read and expanded
     let g32: Genome<f32> = Genome::bare(2, 1, LifParams::<f32>::default());
-    let widened = Genome::<f64>::from_bytes(&g32.to_bytes()).unwrap();
+    let widened = Genome::<f64>::from_bytes(&g32.to_bytes().unwrap()).unwrap();
     assert_eq!(widened.nodes.len(), 3);
     // Distance and mutation work on f64
     assert_eq!(g.distance(&g, 1.0, 1.0, 0.4), 0.0);
@@ -910,7 +910,7 @@ fn population_evolves_saves_and_loads_on_f64() {
     for i in a.individuals() {
         i.genome.validate().unwrap();
     }
-    let bytes = a.save();
+    let bytes = a.save().unwrap();
     let mut b = Population::<f64>::load(&bytes, mk()).unwrap();
     let ra = a.step(&fit);
     let rb = b.step(&fit);

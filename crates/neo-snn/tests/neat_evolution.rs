@@ -132,7 +132,7 @@ fn a_stopped_run_resumes_identically_and_threads_do_not_matter() {
     for _ in 0..3 {
         a.step(&fitness);
     }
-    let bytes = a.save();
+    let bytes = a.save().unwrap();
     let mut one_thread = config(5);
     one_thread.threads = 1;
     let mut b = Population::load(&bytes, one_thread).unwrap();
@@ -182,7 +182,7 @@ fn the_evolved_network_continues_under_structural_plasticity_and_checkpoints() {
         .unwrap();
         net.topology().validate().unwrap();
     }
-    let bytes = save_checkpoint(&net, &ctl, b"");
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
     let ck = load_checkpoint(&bytes).unwrap();
     assert_eq!(ck.network.topology(), net.topology());
     assert!(net.topology().neuron_count() <= pop.config().limits.max_neurons && n0 > 0 && s0 > 0);

@@ -1,32 +1,8 @@
-NeuroLib neo-quantization
-Copyright (c) 2026 Kostyanikov
+NeuroLib
+Copyright (c) 2026 Kostyanikov (Emphronic)
+https://github.com/Emphronic/neurolib
 
-Portions of this crate are derived from ggml/llama.cpp
-(https://github.com/ggerganov/llama.cpp), Copyright (c) the ggml/llama.cpp
-authors, and are used here under the MIT License. A copy of the MIT License
-is provided in the LICENSE file in this directory.
+NeuroLib was created by Kostyanikov and is maintained under the Emphronic organization.
 
-Derived files:
-
-  - src/pack/gguf.rs
-    GGUF block formats Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0.
-
-  - src/pack/kquant.rs
-    K-quant super-block formats Q2_K, Q3_K, Q4_K, Q5_K, Q6_K and Q8_K.
-
-  - src/pack/tq.rs
-    Ternary formats TQ1_0 and TQ2_0.
-
-  - src/pack/iq.rs
-    IQ4_NL and IQ4_XS codebook formats.
-
-  - src/pack/iq1.rs
-    IQ1_S and IQ1_M codebook formats.
-
-  - src/pack/iq_codebook.rs
-    IQ2_XXS, IQ2_XS, IQ3_XXS and IQ3_S codebook formats.
-
-  - src/pack/iq_grids.rs
-    Grid and sign lookup tables shared by the IQ formats.
-
-The remaining source files are original NeuroLib code.
+This product includes software developed by third parties. The notices that
+must accompany it are listed in THIRD_PARTY_NOTICES.md.

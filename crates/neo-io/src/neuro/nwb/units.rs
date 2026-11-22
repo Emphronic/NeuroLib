@@ -393,35 +393,32 @@ pub fn infer_nwb_sample_rate(nwb_or_units_dir: &Path) -> Option<f64> {
         root_dir
     };
 
-    if let Some(attrs) = read_node_attributes(base, units_prefix) {
-        if let Some(sr) = attrs
+    if let Some(attrs) = read_node_attributes(base, units_prefix)
+        && let Some(sr) = attrs
             .get("sample_rate_hz")
             .or_else(|| attrs.get("sampling_rate"))
             .and_then(Value::as_f64)
             .filter(|&r| r > 0.0)
-        {
-            return Some(sr);
-        }
+    {
+        return Some(sr);
     }
     let wm_path = format!("{units_prefix}/waveform_mean");
-    if let Some(attrs) = read_node_attributes(base, &wm_path) {
-        if let Some(sr) = attrs
+    if let Some(attrs) = read_node_attributes(base, &wm_path)
+        && let Some(sr) = attrs
             .get("sampling_rate")
             .and_then(Value::as_f64)
             .filter(|&r| r > 0.0)
-        {
-            return Some(sr);
-        }
+    {
+        return Some(sr);
     }
     let st_path = format!("{units_prefix}/spike_times");
-    if let Some(attrs) = read_node_attributes(base, &st_path) {
-        if let Some(res) = attrs
+    if let Some(attrs) = read_node_attributes(base, &st_path)
+        && let Some(res) = attrs
             .get("resolution")
             .and_then(Value::as_f64)
             .filter(|&r| r > 0.0)
-        {
-            return Some((1.0 / res).round());
-        }
+    {
+        return Some((1.0 / res).round());
     }
     if let Ok(entries) = std::fs::read_dir(root_dir.join("acquisition")) {
         for entry in entries.flatten() {
@@ -429,14 +426,13 @@ pub fn infer_nwb_sample_rate(nwb_or_units_dir: &Path) -> Option<f64> {
                 "/acquisition/{}/starting_time",
                 entry.file_name().to_string_lossy()
             );
-            if let Some(attrs) = read_node_attributes(root_dir, &st) {
-                if let Some(rate) = attrs
+            if let Some(attrs) = read_node_attributes(root_dir, &st)
+                && let Some(rate) = attrs
                     .get("rate")
                     .and_then(Value::as_f64)
                     .filter(|&r| r > 0.0)
-                {
-                    return Some(rate);
-                }
+            {
+                return Some(rate);
             }
         }
     }

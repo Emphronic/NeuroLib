@@ -50,6 +50,7 @@ pub fn gpu_layout(w: &PackedBuffer, n: usize, k: usize) -> Option<GpuQuantLayout
         return None;
     }
 
+    #[allow(clippy::type_complexity)]
     let (codes, bits, scales, group_size, offsets, a, lut): (
         &[u8],
         u32,

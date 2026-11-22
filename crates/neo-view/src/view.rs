@@ -113,20 +113,20 @@ impl View {
         }
         values.clear();
         values.resize(rows * self.width, EMPTY);
-        if let Some(pyramid) = pyramid {
-            if pyramid.envelope(
+        if let Some(pyramid) = pyramid
+            && pyramid.envelope(
                 &self.channels,
                 self.start,
                 self.end,
                 self.width,
                 &mut values,
-            )? {
-                *out = Envelope::Columns {
-                    values,
-                    complete: pyramid.covers(self.start, self.end),
-                };
-                return Ok(());
-            }
+            )?
+        {
+            *out = Envelope::Columns {
+                values,
+                complete: pyramid.covers(self.start, self.end),
+            };
+            return Ok(());
         }
         let columns = self.columns();
         let ranges = chunk_aligned(

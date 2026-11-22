@@ -12,7 +12,7 @@ mod lapicque;
 mod leaky;
 /// A wrapper around fused/reference leaky-scan (see `neo_synk::snn`).
 /// `LeakyParallel` always goes through [`leaky_scan_op::leaky_scan_fused`]:
-/// implementation - `neo_synk::snn::leaky_scan_forward`: on CubeCL devices
+/// implementation - `neo_snn::leaky_scan_forward`: on CubeCL devices
 /// (wgpu / CUDA / ROCm) this is a fused GPU core with manual backward, on the rest -
 /// standard for tensor operations (autodiff works in both cases).
 /// Not `pub use`
@@ -22,7 +22,9 @@ mod multistep;
 mod parallel;
 mod rleaky;
 mod rsynaptic;
+mod stochastic_threshold;
 mod synaptic;
+mod threshold_distribution;
 
 pub use adaptive_leaky::{AdaptiveLeaky, AdaptiveLeakyConfig};
 pub use adex::{AdEx, AdExConfig, AdExPreset, AdExState};
@@ -39,7 +41,11 @@ pub use multistep::{MultiStepLeaky, MultiStepRLeaky, split_time};
 pub use parallel::LeakyParallel;
 pub use rleaky::RLeaky;
 pub use rsynaptic::RSynaptic;
+pub use stochastic_threshold::{
+    StochasticThresholdLeaky, StochasticThresholdLeakyConfig, StochasticThresholdState,
+};
 pub use synaptic::Synaptic;
+pub use threshold_distribution::ThresholdDistribution;
 
 use burn::tensor::Tensor;
 

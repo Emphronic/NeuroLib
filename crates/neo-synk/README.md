@@ -1,39 +1,40 @@
 # neo-synk
 
-Kernel library: fused CubeCL kernels for quantized GEMM and spiking neural network layers.
-Designed to work with `burn` 0.22 backend extensions.
+Kernel library: fused CubeCL kernels for NeuroLib — quantized GEMM and spiking neural network
+layers. Designed to work with `burn` 0.22 backend extensions (`#[backend_extension]`); `Device`
+chooses between "GPU kernel or CPU".
 
 ## What it provides
 
-- **Quantized GEMM** — fused `y = x·Wᵀ` directly from packed weight packages (codes + scales + zero-points), without materializing full f32 matrices
-- **Leaky scan** — fused recurrent leaky integrator forward/backward with manual autodiff
-- **Spike layers** — fused LIF spike computation with surrogate gradients
-- **CPU emulation** — all GPU kernels have CPU fallbacks for machines without CubeCL devices
+| Module | Contents |
+|---|---|
+| [`quant`](./src/quant) | Fused quantized GEMM — `y = x·Wᵀ` directly from packed weight packages (codes + scales + zero-points), without materializing full f32 matrices (`quant_matmul_tensor`, `upload_weights`, `kernel_kind`, ...) |
+| [`snn`](./src/snn) | Fused spike layers — `leaky_scan_forward` (fused kernel on GPU, `snn::leaky_scan_reference` elsewhere; `snn::gpu::leaky_scan_fused`) |
 
 ## Features
 
 | Feature | Description |
-|---------|-------------|
-| `flex` | Burn Flex CPU backend (default) |
-| `wgpu` / `cuda` / `rocm` | GPU backend via burn-wgpu / burn-cuda / burn-rocm |
+|---|---|
+| `flex` (default) | Burn Flex CPU backend |
+| `wgpu` / `cuda` / `rocm` | GPU backends via burn-wgpu / burn-cuda / burn-rocm |
 | `fusion` | Lazy kernel registration in burn Fusion |
 
 ## Usage
 
 ```rust
-use neo_synk::quant::{quant_matmul_tensor, upload_weights};
+use neurolib::synk::quant::{quant_matmul_tensor, upload_weights};
 
 // Quantized matmul directly from packed weights
 let result = quant_matmul_tensor(&x, &weights, &device)?;
 ```
 
-## Cargo
+## Examples
 
-```toml
-[dependencies]
-neo-synk = { path = "crates/neo-synk", features = ["wgpu"] }
-```
+- `cargo run --release -p neo-synk --features wgpu,fusion --example quant_gpu_bench`
+- `cargo run --release -p neo-synk --features wgpu,fusion --example leaky_scan_bench`
 
-## License
+## Book
 
-MIT. See `LICENSE` for details.
+[Quantization](../../neo-book/src/building-blocks/quantization.md),
+[Backend](../../neo-book/src/building-blocks/backend.md)
+

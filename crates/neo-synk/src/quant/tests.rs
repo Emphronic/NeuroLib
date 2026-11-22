@@ -232,6 +232,8 @@ fn nf4_and_ternary_match_reference() {
 fn float_half_and_fp8_match_reference() {
     let (m, n, k) = (3, 5, 70);
     let w = gen_vec(n * k, 10);
+    // A single-element list on purpose: the other schemes are added here when they get tests.
+    #[allow(clippy::single_element_loop)]
     for s in [PackedScheme::Float] {
         let p = pack(&w, s, k);
         assert_eq!(kernel_kind(&p, k), KernelKind::RowDecode);

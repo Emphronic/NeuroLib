@@ -318,6 +318,7 @@ impl TrainTx {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Sparse connections (`from[k] → to[k]` with weight `weight[k]`) of layer `layer` from `rows` neurons in `cols`.
     /// The three lists must be the same length, otherwise the event is silently skipped. Send once per frame, just like spikes.
     pub fn sparse_links(

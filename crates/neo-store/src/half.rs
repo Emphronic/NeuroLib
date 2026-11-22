@@ -82,6 +82,7 @@ pub fn bf16_bits_to_f32(h: u16) -> f32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::excessive_precision)] // exact f16/bf16 boundary values are the point of these tests
 mod tests {
     use super::*;
 

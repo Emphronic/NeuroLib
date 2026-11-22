@@ -14,8 +14,10 @@ const ROOTS: &[(&str, &str)] = &[
     ("kan", include_str!("../src/kan/mod.rs")),
     ("layers", include_str!("../src/layers.rs")),
     ("neuron", include_str!("../src/neuron/mod.rs")),
+    ("probabilistic", include_str!("../src/probabilistic/mod.rs")),
     ("reservoir", include_str!("../src/reservoir/mod.rs")),
     ("surrogate", include_str!("../src/surrogate/mod.rs")),
+    ("temporal", include_str!("../src/temporal/mod.rs")),
 ];
 
 /// Names that are not included in the prelude intentionally.

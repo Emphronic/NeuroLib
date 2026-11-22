@@ -1,42 +1,49 @@
 # neo-io
 
-Recording formats and containers for multi-channel neural data: raw `.bin`, `.npy`/`.npz`,
-Zarr, with optional NWB, SpikeGLX, mtscomp, probe geometry, and sorting-file support.
+Recording formats and containers for multi-channel neural data: raw `.bin`, `.npy`/`.npz`, Zarr
+traces — and, behind the `neuro` feature, NWB, SpikeGLX, mtscomp, probe geometry, synthetic
+recordings, and Phy/Kilosort sorting files.
+
+Every format implements `RecordingSource` (bounded reads of any recording without knowing how it is
+stored) and the `Format` trait; `detect`/`open` pick the reader from the path.
 
 ## What it provides
 
-- **Raw binary** — `.bin` + `.meta` JSON sidecar, written by `neo_io::write_raw`
-- **NumPy** — `.npy` and `.npz` (zip) reading and writing
-- **Zarr** — Zarr v2 traces (behind the `zarr` feature)
-- **Neuro formats** — NWB, SpikeGLX, mtscomp, probe geometry, synthetic recordings (behind the `neuro` feature)
-- **Phy/Kilosort** — sorting files, templates, similar-templates
+| Module | Contents |
+|---|---|
+| [`generic::raw`](./src/generic/raw) | `RawRecording`, `RawParams` (JSON `.meta` sidecar), `write_raw` — headerless binary recordings, memory-mapped |
+| [`generic::zarr_traces`](./src/generic/zarr_traces) (`zarr`) | `ZarrRecording`, `write_zarr` — Zarr v2 traces |
+| [`container::npy`](./src/container/npy) | `.npy`/`.npz` reading and writing |
+| [`container::binary`](./src/container/binary) | Shared binary codecs (frames, CRC) |
+| [`neuro`](./src/neuro) (`neuro`) | `MtscompRecording` (SpikeGLX `.bin`/`.cbin`), NWB, probe geometry, synthetic recordings |
+| [`core`](./src/core) | `Format` trait, `detect`, `open`, `open_source`, `sources`, `CachedRecording` |
+| [`registry`](./src/registry.rs) | `formats` — the registry of supported formats |
 
 ## Features
 
 | Feature | Description |
-|---------|-------------|
-| `zarr` | Enable Zarr trace format |
-| `neuro` | Enable NWB, SpikeGLX, mtscomp, probe geometry |
+|---|---|
+| `zarr` (default) | Zarr trace format |
+| `neuro` | NWB, SpikeGLX, mtscomp, probe geometry, sorting files |
 
 ## Usage
 
 ```rust
-use neo_io::{write_raw, Format};
+use std::path::Path;
+use neurolib::io::open;
 
-// Write raw recording + sidecar
-write_raw("recording.bin", &data, num_channels, sample_rate)?;
+// Open any supported format (the format is detected from the path)
+let rec = open(Path::new("recording.nwb"))?;
 
-// Open any supported format
-let fmt = neo_io::open("recording.bin")?;
+// List available sources (the main one + extras, e.g. units for NWB)
+for source in neurolib::io::sources(Path::new("recording.nwb"))? {
+    println!("{:?}", source);
+}
 ```
 
-## Cargo
+## Book
 
-```toml
-[dependencies]
-neo-io = { path = "crates/neo-io", features = ["zarr", "neuro"] }
-```
+[Data](../../neo-book/src/basic-workflow/data.md)
 
-## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
+

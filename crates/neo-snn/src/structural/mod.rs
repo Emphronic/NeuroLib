@@ -180,10 +180,16 @@
 //!
 //! # Limitations
 //!
-//! * CPU only; the GPU path for the dynamic graph is not implemented. The dense
-//!   executor [`dense`](crate::structural::dense) supports only LIF and excitatory neurons:
-//!   it rejects a heterogeneous network; use
-//!   [`DynamicNetwork`](crate::structural::DynamicNetwork) for that.
+//! * The dynamic graph has a Burn-based GPU executor:
+//!   [`dense_burn::TensorNet`](crate::dense_burn) — matmul per delay, LIF/AdaptiveLIF
+//!   dynamics, inhibition through the sign of weights (Dale); runs on the Burn
+//!   device (CPU/GPU). The dense reference [`dense`](crate::structural::dense)
+//!   supports LIF/ALIF on CPU and is verified against the CPU engine
+//!   (`structural::dense` tests, ALIF+inhibition test `matches_event_engine_alif_and_inhibition`;
+//!   Burn executor tests `tests/dense_burn.rs`). Heterogeneous
+//!   (mixed LIF/ALIF) networks are supported. Use
+//!   [`DynamicNetwork`](crate::structural::DynamicNetwork) for spike-level
+//!   semantics (delays, statistics, STDP, structural plasticity).
 //! * Automatic model selection is a heuristic based on rate and cost. It does not
 //!   simulate candidates and does not guarantee an improvement in the task metric, so it is
 //!   disabled by default; the decision is verified by the controller's common rollback.
@@ -205,9 +211,13 @@
 //! * If `GrowthConfig::target_loss` is set, growth (of synapses and neurons)
 //!   is allowed only while the loss is above that value.
 
+pub mod analysis;
 pub mod checkpoint;
 pub mod controller;
+pub mod custom;
 pub mod dense;
+pub mod eprop;
+pub mod eprop_gpu;
 pub mod error;
 pub mod evolution;
 pub mod fixed;
@@ -218,6 +228,7 @@ pub mod mutation;
 pub mod network;
 pub mod neuron_ops;
 pub mod param_learning;
+pub mod plasticity;
 pub mod policy;
 pub mod pruning;
 pub mod rng;
@@ -228,19 +239,35 @@ pub mod topology;
 #[cfg(test)]
 mod tests;
 
+pub use analysis::{
+    ActivityHistory, CausalValidation, ConnectivityEstimate, ConnectivityEstimator,
+    ReconstructedConnectivity, SpectralConnectivity, validate_causal,
+};
+
 pub use checkpoint::{
     Checkpoint, FORMAT_VERSION, FORMAT_VERSION_F64, load_checkpoint, load_checkpoint_as,
-    load_from_file, load_from_file_as, save_checkpoint, save_to_file,
+    load_checkpoint_with_registry, load_from_file, load_from_file_as, save_checkpoint,
+    save_to_file,
 };
 pub use controller::{
     AdaptReport, BestSnapshot, Metrics, SkipReason, StructuralPlasticityController,
 };
+pub use custom::{
+    CustomCodec, CustomNeuronInstance, CustomNeuronRegistry, CustomParamMutation, CustomParameter,
+    CustomStateEntry, CustomStateEntryBox, DynamicNeuronModel, NeuronObservation,
+    NeuronStepContext, RegisteredCustomModel,
+};
+pub use eprop::{
+    EpropConfig, EpropReport, EpropScope, EpropState, EpropTrainer, FeedbackScheme, ReadoutMode,
+};
+pub use eprop_gpu::{GpuEpropConfig, GpuEpropTrainer};
 pub use error::{StructuralError, StructuralResult};
 pub use growth::{grow_neurons, grow_synapses, propose_grow_neuron, propose_grow_synapses};
 pub use model::{
     AdExParams, AdExState, AdaptiveLifParams, AdaptiveLifState, HodgkinHuxleyParams,
     HodgkinHuxleyState, IzhikevichParams, IzhikevichState, LifParams, LifState, ModelSwitchOutcome,
-    NeuronKind, NeuronModel, NeuronParam, NeuronPolarity, NeuronRole, NeuronState, StateMigration,
+    NeuronKind, NeuronModel, NeuronParam, NeuronPolarity, NeuronRole, NeuronState,
+    OnlineEpropFamily, StateMigration,
 };
 pub use model_selection::{
     ModelCandidate, ModelSelectionConfig, propose_model_switches, propose_model_switches_evaluated,
@@ -250,11 +277,18 @@ pub use mutation::{
     StructuralEvent, apply_action, apply_batch,
 };
 pub use network::{
-    DynamicNetwork, EiBalanceConfig, EiBalanceReport, EngineConfig, InhibitoryPlasticityConfig,
-    InputMode, PlasticityMode, StdpConfig, StepOutput,
+    CondState, ConductanceParams, DynamicNetwork, EiBalanceConfig, EiBalanceReport, EngineConfig,
+    InhibitoryPlasticityConfig, InputMode, LearnableDelayConfig, PlasticityMode, StdpConfig,
+    StepOutput, StpConfig, StpMode, StpState, SynapseModel, TrainableDelayState,
 };
 pub use neuron_ops::{MutationOutcome, NeuronMutation, RemovedNeuron, SplitInit, SplitResult};
 pub use param_learning::{ParamLearningConfig, propose_param_updates};
+pub use plasticity::{
+    BcmState, ClopathState, InhibitoryState, ModulatorChannel, ModulatorConfig, ModulatorEvent,
+    ModulatorTarget, PairState, PipelineCtx, PlasticityPipeline, PlasticityPipelineConfig,
+    PlasticityReport, PlasticityRule, RewardState, RuleClass, RuleConfig, RuleEntry, RuleId,
+    RuleState, TripletState,
+};
 pub use policy::{
     GrowthConfig, GrowthStrategy, HomeostasisConfig, NeuronGrowthConfig, PruningConfig,
     RollbackConfig, ScheduleConfig, StructuralConfig, SynapseGrowthConfig,

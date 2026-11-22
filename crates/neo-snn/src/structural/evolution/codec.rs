@@ -5,6 +5,7 @@
 use crate::scalar::Scalar;
 use crate::state::ResetMode;
 
+use super::super::custom::CustomNeuronRegistry;
 use super::super::error::{StructuralError, StructuralResult};
 use super::super::model::{
     AdExParams, AdaptiveLifParams, HodgkinHuxleyParams, IzhikevichParams, LifParams, NeuronModel,
@@ -69,7 +70,27 @@ impl W {
             ResetMode::None => 2,
         });
     }
-    pub fn model<T: Scalar>(&mut self, m: &NeuronModel<T>) {
+    /// Length-prefixed string.
+    pub fn str(&mut self, s: &str) {
+        self.u64(s.len() as u64);
+        self.buf.extend_from_slice(s.as_bytes());
+    }
+    /// Length-prefixed byte blob.
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.u64(b.len() as u64);
+        self.buf.extend_from_slice(b);
+    }
+    pub fn model<T: Scalar>(&mut self, m: &NeuronModel<T>) -> StructuralResult<()> {
+        if let NeuronModel::Custom(cm) = m {
+            // Custom model: stable id + schema version + config bytes.
+            // Model code itself is NOT stored (provided by the registry).
+            let id = cm.model_id().to_string();
+            self.u8(5);
+            self.str(&id);
+            self.u32(cm.schema_version());
+            self.bytes(&cm.encode_config()?);
+            return Ok(());
+        }
         self.u8(m.tag());
         match m {
             NeuronModel::Lif(p) => self.lif(p),
@@ -118,7 +139,9 @@ impl W {
                 }
                 self.len(p.substeps);
             }
+            NeuronModel::Custom(_) => unreachable!(),
         }
+        Ok(())
     }
 }
 
@@ -191,6 +214,25 @@ impl<'a> R<'a> {
         }
         Ok(n as usize)
     }
+    /// Length-prefixed string.
+    pub fn str(&mut self) -> StructuralResult<String> {
+        let n = self.u64()?;
+        let n = usize::try_from(n)
+            .ok()
+            .filter(|&n| n <= MAX_ITEMS)
+            .ok_or_else(|| err("string too long"))?;
+        let bytes = self.take(n)?.to_vec();
+        String::from_utf8(bytes).map_err(|_| err("invalid utf-8 string"))
+    }
+    /// Length-prefixed byte blob.
+    pub fn bytes(&mut self) -> StructuralResult<Vec<u8>> {
+        let n = self.u64()?;
+        let n = usize::try_from(n)
+            .ok()
+            .filter(|&n| n <= MAX_ITEMS)
+            .ok_or_else(|| err("blob too long"))?;
+        Ok(self.take(n)?.to_vec())
+    }
     pub fn lif<T: Scalar>(&mut self) -> StructuralResult<LifParams<T>> {
         let (beta, threshold) = (self.sc()?, self.sc()?);
         let reset = match self.u8()? {
@@ -205,8 +247,19 @@ impl<'a> R<'a> {
             reset,
         })
     }
-    pub fn model<T: Scalar>(&mut self) -> StructuralResult<NeuronModel<T>> {
-        Ok(match self.u8()? {
+    pub fn model<T: Scalar>(
+        &mut self,
+        registry: &CustomNeuronRegistry<T>,
+    ) -> StructuralResult<NeuronModel<T>> {
+        let tag = self.u8()?;
+        if tag == 5 {
+            let id = self.str()?;
+            let version = self.u32()?;
+            let bytes = self.bytes()?;
+            let (instance, _) = registry.create(&id, version, &bytes, &[])?;
+            return Ok(NeuronModel::Custom(instance));
+        }
+        Ok(match tag {
             0 => NeuronModel::Lif(self.lif()?),
             1 => NeuronModel::AdaptiveLif(AdaptiveLifParams {
                 beta: self.sc()?,

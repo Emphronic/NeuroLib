@@ -138,7 +138,7 @@ impl LiquidStateMachineConfig {
                 return bad(format!("{name} must lie in [0, 1), obtained {v}"));
             }
         }
-        if !(self.threshold > 0.0) {
+        if self.threshold.is_nan() || self.threshold <= 0.0 {
             return bad(format!(
                 "threshold must be > 0, obtained {}",
                 self.threshold

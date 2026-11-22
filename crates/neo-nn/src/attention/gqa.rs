@@ -61,13 +61,13 @@ impl GqaAttentionConfig {
             return Err("max_seq_len must be > 0".into());
         }
         if self.rope {
-            if self.head_dim() % 2 != 0 {
+            if !self.head_dim().is_multiple_of(2) {
                 return Err(format!(
                     "head_dim ({}) must be even (RoPE)",
                     self.head_dim()
                 ));
             }
-            if !(self.rope_theta > 0.0) || !self.rope_theta.is_finite() {
+            if !(self.rope_theta.is_finite() && self.rope_theta > 0.0) {
                 return Err("rope_theta must be > 0".into());
             }
         }

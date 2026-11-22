@@ -195,7 +195,7 @@ fn main() {
         "total: loss {l:.3} accuracy {a:.2}; events in the log: {}",
         ctl.log().len()
     );
-    let bytes = save_checkpoint(&net, &ctl, b"optimizer-state-if-any");
+    let bytes = save_checkpoint(&net, &ctl, b"optimizer-state-if-any").unwrap();
     let ck = load_checkpoint(&bytes).unwrap();
     assert_eq!(ck.network.topology(), net.topology());
     println!(

@@ -12,7 +12,7 @@ use super::genome::{ConnGene, Genome, Innov, InnovationTracker, NodeGene};
 
 /// Probabilities and extent of mutations.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MutationConfig<T = f32> {
+pub struct MutationConfig<T: Scalar = f32> {
     /// The probability that the weights of the genome generally mutate.
     pub weight_mutate_prob: T,
     /// The share of connections whose weight is replaced by a new random one rather than shifted.
@@ -108,7 +108,7 @@ pub struct MutationSummary {
 }
 
 /// Mutation environment: constraints that any descendant must satisfy.
-pub(crate) struct Env<'a, T = f32> {
+pub(crate) struct Env<'a, T: Scalar = f32> {
     pub cfg: &'a MutationConfig<T>,
     pub limits: &'a TopologyLimits,
     pub plimits: &'a ParamLimits<T>,
@@ -212,6 +212,7 @@ fn mutate_inner<T: Scalar>(
             }
             let mut model = cfg
                 .split_model
+                .clone()
                 .unwrap_or(NeuronModel::Lif(cfg.split_params));
             clamp_model(&mut model, pl);
             let in_w = cfg
@@ -328,6 +329,20 @@ fn mutate_inner<T: Scalar>(
                     changed |= new != value;
                 }
             }
+            // Named custom parameters of custom models.
+            for cp in n.model.custom_params() {
+                if !cp.mutable {
+                    continue;
+                }
+                let new = cp.mutation.step(rng, cp.value);
+                let actual = cp.clamp_value(new);
+                if n.model
+                    .set_custom_param(&cp.id, actual)
+                    .is_some_and(|v| v != cp.value)
+                {
+                    changed = true;
+                }
+            }
             if changed {
                 s.params_changed += 1;
             }
@@ -338,9 +353,12 @@ fn mutate_inner<T: Scalar>(
             if !rng.chance(cfg.model_mutate_prob.to_f32()) {
                 continue;
             }
-            let mut model = cfg.model_candidates[rng.below(cfg.model_candidates.len())];
+            let mut model = cfg.model_candidates[rng.below(cfg.model_candidates.len())].clone();
             clamp_model(&mut model, pl);
-            if model.tag() != n.model.tag() {
+            if !n.model.is_same_dynamics(&model) {
+                // Genome nodes have no dynamic state: the model is swapped in place.
+                // A custom target validates itself via
+                // `DynamicNeuronModel::validate` during read/mutate checks.
                 n.model = model;
                 s.models_changed += 1;
             }

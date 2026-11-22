@@ -1,87 +1,76 @@
 # NeuroLib
 
-NeuroLib is a Rust workspace focused on spiking neural networks (SNN) and support quantized neural network layers,
-weight storage, and multi-channel signal processing. It is built on top of [Burn 0.22]
-(https://github.com/burn-rs/burn) and provides a modular, crate-by-crate architecture inspired by
-Burn's own design.
+Spiking neural networks, quantized layers, fused kernels, a weight format and
+tools for neural recordings in Rust, built on [Burn](https://burn.dev) 0.22.
 
-## Workspace crates
+NeuroLib is created and maintained by **Kostyanikov**, lead of the
+[Emphronic](https://github.com/Emphronic) organization.
 
-| Crate | Purpose |
-|-------|---------|
-| [`neurolib`](crates/neurolib) | Facade crate — single entry point, all features behind Cargo features |
-| [`neo-core`](crates/neo-core) | Time, buffers, `RecordingSource`, out-of-core window streaming, CubeCL compute layer |
-| [`neo-io`](crates/neo-io) | Recording formats: raw `.bin`, `.npy`/`.npz`, Zarr, NWB, SpikeGLX, mtscomp |
-| [`neo-view`](crates/neo-view) | Min/max envelopes and pyramids for viewing multi-channel signals |
-| [`neo-synapse`](crates/neo-synapse) | Spike-train metrics: correlograms, ISI, firing rate, snippets, PCA |
-| [`neo-quantization`](crates/neo-quantization) | Quantization formats: GGUF (Q4_0..Q8_1), K-quants (Q2_K..Q8_K), IQ series, NF4, TQ |
-| [`neo-synk`](crates/neo-synk) | Fused CubeCL kernels: quantized GEMM, leaky scan, spike layers |
-| [`neo-snn`](crates/neo-snn) | Spiking neural networks: LIF, Izhikevich, STDP, attention, structural plasticity |
-| [`neo-nn`](crates/neo-nn) | Conventional NN layers: quantized linear, MoE, transformer blocks, embeddings |
-| [`neo-gui`](crates/neo-gui) | GPUI-based workbench: traces, heatmap, channels, timeline, training dashboard |
-| [`neo-store`](crates/neo-store) | `.syn` binary weight container with graph, CRC-32C, mmap, sharding |
+## Crates
 
-## Features of the facade crate (`neurolib`)
+| Module in `neurolib` | Crate | What it is |
+|---|---|---|
+| `snn` | `neo-snn` | Spiking layers on Burn: LIF/ALIF/Izhikevich/AdEx/Hodgkin-Huxley and more, surrogate gradients, STDP, spike attention, ANN to SNN conversion, structural plasticity, reservoir computing, telemetry |
+| `nn` | `neo-nn` | Generic layers: quantized linear, MoE, transformer blocks, embeddings |
+| `quant` | `neo-quantization` | GGUF Q4-Q8, K-quants, IQ series, NF4, ternary/TQ, INT1-INT8 |
+| `synk` | `neo-synk` | Fused CubeCL kernels: quantized GEMM, leaky scan, spike/surrogate operations |
+| `store` | `neo-store` | `.syn` weight format: network graph (NIR compatible), checksums, mmap, sharding; `synctl` CLI |
+| `core`, `io`, `view`, `synapse` | `neo-core`, `neo-io`, `neo-view`, `neo-synapse` | Recordings: time and buffers, formats (npy/npz, Zarr, NWB, SpikeGLX), viewing, spike metrics |
+| - | `neo-gui` | Workbench application (GPUI): Explore, Curation and Training |
+
+`neurolib` is the single entry point: one dependency, everything else is enabled
+through features (the same idea as the `burn` crate).
 
 ```toml
 [dependencies]
-neurolib = { path = "crates/neurolib", features = ["full"] }
+neurolib = { version = "0.1", features = ["snn", "wgpu"] }
+burn = "0.22"
 ```
 
-| Feature group | What it enables |
-|---------------|-----------------|
-| `ml` (default) | `neo-snn`, `neo-nn`, `neo-quantization`, `neo-synk`, `neo-store` |
-| `signal` | `neo-core`, `neo-io`, `neo-view`, `neo-synapse`, `zarr`, `neuro` |
-| `full` | `ml` + `signal` + `demo` |
-| `wgpu` / `cuda` / `rocm` | GPU kernels in `neo-synk` + compute layer in `neo-core`/`neo-view` |
-| `flex` | Burn CPU backend (convenient for tests) |
-| `optim` / `train` / `dataset` / `vision` | Burn features forwarded through the dependency graph |
+Feature groups: `ml` (default), `signal`, `full`. Backends: `wgpu`, `cuda`,
+`rocm` (plus `fusion`), `flex` for the CPU.
 
 ## Quick start
 
+Burn 0.22 has no backend type parameter: the backend is chosen by the `Device`.
+
 ```rust
-use neurolib::prelude::*;
-use burn::tensor::Tensor;
+use burn::tensor::{Device, Distribution, Tensor};
+use neurolib::snn::neuron::{LeakyConfig, MultiStepLeaky};
+use neurolib::snn::surrogate::ATan;
 
-// A simple LIF spiking layer
-let device = Default::default();
-let lif = LeakyConfig::new(128).init(&device);
-
-// Quantized linear layer
-let quantized = QuantizedLinearConfig::new(784, 128).init(&device);
+let device = Device::flex().autodiff(); // CPU with autodiff; Device::wgpu(..) for GPU
+let layer = MultiStepLeaky::new(&LeakyConfig::new(0.9), &device);
+let x: Tensor<3> = Tensor::random([8, 50, 128], Distribution::Normal(0.5, 1.0), &device);
+let spikes = layer.forward(x, &ATan::default()); // [batch, time, features]
 ```
 
-Build and test:
+Kernels are reachable from the spiking module; the device picks the
+implementation (fused CubeCL kernel on wgpu/CUDA/ROCm, reference on the rest):
 
-```bash
-cargo check --workspace
-cargo test --workspace
-cargo run -p neo-gui --release -- --synthetic 30s
-```
-
-## Project structure
-
-```
-neurolib/                     # Workspace root
-├── Cargo.toml                # Workspace manifest
-├── LICENSE-MIT               # MIT license
-├── LICENSE-APACHE            # Apache-2.0 license
-├── CHANGES.md                # Change log
-└── crates/
-    ├── neurolib/             # Facade crate
-    ├── neo-core/             # Core primitives
-    ├── neo-io/               # I/O and recording formats
-    ├── neo-view/             # Signal viewing
-    ├── neo-synapse/          # Spike metrics
-    ├── neo-quantization/     # Quantization formats
-    ├── neo-synk/             # Fused kernels
-    ├── neo-snn/              # Spiking neural networks
-    ├── neo-nn/               # Neural network layers
-    ├── neo-gui/              # GUI workbench
-    └── neo-store/            # Weight storage (.syn format)
+```rust
+use neurolib::snn::leaky_scan_forward;
+let u = leaky_scan_forward(input, mem0, beta);
 ```
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
-unless noted otherwise in a specific crate directory.
+Copyright (c) 2026 Kostyanikov (Emphronic).
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. The crates `neo-core`, `neo-nn`, `neo-quantization`, `neo-snn`
+and `neo-synk` are licensed under the MIT license only, see their `Cargo.toml`.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in NeuroLib by you shall be licensed under the same terms as the
+crate it is submitted to, without any additional terms or conditions.
+
+## Citation
+
+See [CITATION.cff](CITATION.cff).

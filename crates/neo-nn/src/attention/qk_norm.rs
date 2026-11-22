@@ -21,7 +21,7 @@ impl QkNormConfig {
         if self.head_dim == 0 {
             return Err("head_dim must be > 0".into());
         }
-        if !(self.eps > 0.0) || !self.eps.is_finite() {
+        if !(self.eps.is_finite() && self.eps > 0.0) {
             return Err("eps must be finite and > 0".into());
         }
         Ok(())

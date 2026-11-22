@@ -1,53 +1,53 @@
 # neo-core
 
-Foundational primitives for signal recordings: exact time and sample rates, buffers, errors,
-the `RecordingSource` contract, out-of-core window streaming, and an optional CubeCL compute
-layer.
+Foundational primitives for NeuroLib recordings: exact time and sample rates, buffers, the
+`RecordingSource` contract, out-of-core window streaming, and an optional CubeCL compute layer.
 
 ## What it provides
 
-- **Time and sample rates** — type-safe time representations with exact sample-rate handling
-- **Buffers** — contiguous and chunked sample buffers for multi-channel recordings
-- **RecordingSource** — trait for opening and listing recording sources (files, streams, memory)
-- **Window streaming** — out-of-core windowed access to large recordings without loading everything into RAM
-- **Compute layer** — optional CubeCL backend (`wgpu`, `cuda`, `hip`, `cpu`) for GPU-accelerated operations
-- **Errors** — `ComputeError`, `IoError`, `UnsupportedFormatError`, and typed result aliases
+| Module | Contents |
+|---|---|
+| [`time`](./src/time) | `RationalTime`, `SampleRate`, `TimeRange` — exact time and sample-rate handling |
+| [`buffer`](./src/buffer) | `SignalChunk`, `BufferLayout`, `MemoryOrder` — chunked sample buffers |
+| [`recording`](./src/recording) | `RecordingSource`, `MemoryRecording`, `RecordingInfo`, `ChannelInfo`, `SampleFormat`, `SignalUnit` (`MICROVOLTS_PER_VOLT`), `SlicedRecording` |
+| [`window`](./src/window) | `WindowLoader`, `HaloWindow`, `ChunkSchedule` — out-of-core windowed access to large recordings |
+| [`device`](./src/device.rs) | `ComputeTarget` — one name for the runtime across the workspace: `wgpu`, `cuda`, `hip`, `cpu` (env var `NEO_RUNTIME`) |
+| [`compute`](./src/compute) (feature `compute`) | CubeCL backend — launching kernels on the target device |
+| [`mask`](./src/mask) | `ChannelMask` — which channels are active |
+| [`progress`](./src/progress.rs) | `ProgressSink`, `NoProgress`, `ProgressEvent` |
+| [`error`](./src/error.rs) | `DspError`, `DspResult` |
 
 ## Features
 
 | Feature | Description |
-|---------|-------------|
-| `compute` | Enable CubeCL compute layer (off by default) |
-| `wgpu` / `cuda` / `cuda` / `hip` | GPU backend for the compute layer |
-| `cpu` | CPU CubeCL device |
+|---|---|
+| `compute` | Enable the CubeCL compute layer |
+| `wgpu` | WebGPU backend |
+| `cuda` | NVIDIA CUDA backend |
+| `hip` | AMD ROCm backend |
+| `cpu` | CubeCL CPU device |
 
 ## Usage
 
 ```rust
-use neo_core::{RecordingSource, MemoryRecording};
+use neurolib::core::{ComputeTarget, MemoryRecording};
 
-// Create an in-memory recording
-let rec = MemoryRecording::new(f32_data, num_channels, sample_rate);
+// In-memory recording (f32 samples, channel-major)
+let rec = MemoryRecording::new("recording", data, num_channels, sample_rate_hz)?;
 
-// Open a source from a file
-let source = neo_core::open_source("recording.bin")?;
+// Which compute runtime is available
+let target = ComputeTarget::from_env()?;
 ```
 
 ## Cargo
 
 ```toml
 [dependencies]
-neo-core = { path = "crates/neo-core" }
-# or, within the NeuroLib workspace:
-neo-core = { path = "../neo-core" }
+neo-core = { path = "crates/neo-core", features = ["compute"] }
 ```
 
-Enable GPU compute:
+Book: [compute target](../../neo-book/src/building-blocks/backend.md),
+[viewing](../../neo-book/src/building-blocks/viewing.md).
 
-```toml
-neo-core = { path = "../neo-core", features = ["compute", "wgpu"] }
-```
 
-## License
 
-MIT. See [LICENSE](LICENSE) for details.

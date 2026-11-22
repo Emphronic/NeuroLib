@@ -8,6 +8,7 @@ use crate::scalar::Scalar;
 use std::collections::BTreeSet;
 
 use super::error::{StructuralError, StructuralResult};
+use super::network::SynapseModel;
 use super::topology::{
     Birth, NeuronId, NeuronRole, Origin, Synapse, SynapseId, SynapseState, Topology,
 };
@@ -43,6 +44,7 @@ impl<T: Scalar> Topology<T> {
         dst: NeuronId,
         delay: u16,
         ignore: Option<SynapseId>,
+        new_model: SynapseModel<T>,
     ) -> StructuralResult<()> {
         if !self.neurons.contains_key(&src) {
             return Err(StructuralError::NoSuchNeuron(src));
@@ -67,10 +69,15 @@ impl<T: Scalar> Topology<T> {
             if Some(*sid) == ignore {
                 continue;
             }
-            if let Some(x) = self.synapses.get(sid) {
-                if x.dst == dst && (!self.limits.allow_duplicates || x.delay == delay) {
-                    return Err(StructuralError::DuplicateSynapse { src, dst });
-                }
+            if let Some(x) = self.synapses.get(sid)
+                && x.dst == dst
+                && (!self.limits.allow_duplicates || x.delay == delay)
+                && !x.model.is_cond()
+                && !new_model.is_cond()
+            {
+                // Conductance-based synapses are allowed as multiedges (each has its
+                // own independent receptor dynamics); current-based ones stay unique.
+                return Err(StructuralError::DuplicateSynapse { src, dst });
             }
         }
         if !self.limits.allow_recurrent && (src == dst || self.reaches(dst, src, ignore)) {
@@ -121,11 +128,34 @@ impl<T: Scalar> Topology<T> {
         origin: Origin,
         birth: Birth,
     ) -> StructuralResult<SynapseId> {
+        self.add_synapse_with_model(
+            src,
+            dst,
+            weight,
+            delay,
+            SynapseModel::CurrentBased,
+            origin,
+            birth,
+        )
+    }
+
+    /// Create a synapse with an explicit transmission model ([`SynapseModel`]) —
+    /// e.g. `SynapseModel::Ampa`/`Nmda`/`Gaba` (conductance-based) or `CurrentBased`.
+    pub fn add_synapse_with_model(
+        &mut self,
+        src: NeuronId,
+        dst: NeuronId,
+        weight: T,
+        delay: u16,
+        model: SynapseModel<T>,
+        origin: Origin,
+        birth: Birth,
+    ) -> StructuralResult<SynapseId> {
         let w = self.clamp_weight(weight)?;
-        self.check_add_synapse(src, dst, delay, None)?;
+        self.check_add_synapse(src, dst, delay, None, model)?;
         // Dale's principle: the sign of the new connection determines the polarity of the source.
         let w = self.dale_new_weight(src, w);
-        Ok(self.raw_insert_synapse(src, dst, w, delay, birth, origin))
+        Ok(self.raw_insert_synapse(src, dst, w, delay, model, birth, origin))
     }
 
     /// Remove the synapse and return it.
@@ -151,6 +181,18 @@ impl<T: Scalar> Topology<T> {
         Ok(w)
     }
 
+    /// Set the binary flag of a synapse (paper-style binary weights —
+    /// the weight is `0` or `±W_max`; see arXiv:2610.16022).
+    /// Storage/semantics only — delivery is unchanged.
+    pub fn set_synapse_binary(&mut self, id: SynapseId, on: bool) -> StructuralResult<()> {
+        let s = self
+            .synapses
+            .get_mut(&id)
+            .ok_or(StructuralError::NoSuchSynapse(id))?;
+        s.binary = on;
+        Ok(())
+    }
+
     /// Change the available synapse parameters (weight and/or delay).
     pub fn mutate_synapse(&mut self, id: SynapseId, m: SynapseMutation<T>) -> StructuralResult<()> {
         let (src, dst, old_delay) = {
@@ -164,10 +206,11 @@ impl<T: Scalar> Topology<T> {
             Some(w) => Some(self.dale_clamp_weight(src, self.clamp_weight(w)?)),
             None => None,
         };
-        if let Some(d) = m.delay {
-            if d != old_delay {
-                self.check_add_synapse(src, dst, d, Some(id))?;
-            }
+        if let Some(d) = m.delay
+            && d != old_delay
+        {
+            let model = self.synapses[&id].model;
+            self.check_add_synapse(src, dst, d, Some(id), model)?;
         }
         if let Some(s) = self.synapses.get_mut(&id) {
             if let Some(w) = new_w {
@@ -201,7 +244,8 @@ impl<T: Scalar> Topology<T> {
         if src == old_src && dst == old_dst {
             return Ok(());
         }
-        self.check_add_synapse(src, dst, delay, Some(id))?;
+        let model = self.synapses[&id].model;
+        self.check_add_synapse(src, dst, delay, Some(id), model)?;
         if let Some(v) = self.out_adj.get_mut(&old_src) {
             v.retain(|x| *x != id);
         }

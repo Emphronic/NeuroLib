@@ -260,7 +260,7 @@ impl BrainLayout {
         let mut best: Option<((usize, usize), f32)> = None;
         for &(l, u, x, y) in &self.nodes {
             let d = (((x - fx) * w).powi(2) + ((y - fy) * h).powi(2)).sqrt();
-            if d <= radius && best.map_or(true, |(_, b)| d <= b) {
+            if d <= radius && best.is_none_or(|(_, b)| d <= b) {
                 best = Some(((l, u), d));
             }
         }
@@ -759,14 +759,13 @@ pub fn render_brain(req: &BrainRequest) -> (Frame, BrainInfo, BrainLayout) {
         .iter()
         .map(|u| u.iter().filter(|&&v| v > 0.0).count())
         .sum();
-    if let Some(out) = frame_of(2) {
-        if let Some(t) = (0..out.steps)
+    if let Some(out) = frame_of(2)
+        && let Some(t) = (0..out.steps)
             .rev()
             .find(|&t| (0..out.units).any(|u| out.spiked(t, u)))
-        {
-            info.output_step = Some(t);
-            info.output_fired = (0..out.units).filter(|&u| out.spiked(t, u)).collect();
-        }
+    {
+        info.output_step = Some(t);
+        info.output_fired = (0..out.units).filter(|&u| out.spiked(t, u)).collect();
     }
 
     // ── the map, in linear light
@@ -866,34 +865,34 @@ pub fn render_brain(req: &BrainRequest) -> (Frame, BrainInfo, BrainLayout) {
         }
     }
     // The picked neuron's own synapses, all of them
-    if let Some((sl, su)) = sel {
-        if let Some(me) = place(sl, su) {
-            for (pair, from_me) in [(sl.checked_sub(1), false), (Some(sl), true)] {
-                let Some(p) = pair else { continue };
-                let Some(m) = req.weights.get(p).and_then(|m| m.as_ref()) else {
-                    continue;
-                };
-                let others = if from_me {
-                    m.strongest_from(su, 400)
-                } else {
-                    m.strongest_into(su, 400)
-                };
-                let other_layer = if from_me { p + 1 } else { p };
-                for (o, v) in others {
-                    if let Some(pt) = place(other_layer, o) {
-                        draw_arc(
-                            &mut hdr,
-                            (me.0, me.1),
-                            (pt.0, pt.1),
-                            if v >= 0.0 {
-                                [0.6, 1.0, 0.8]
-                            } else {
-                                [1.0, 0.55, 0.45]
-                            },
-                            0.35,
-                            &clip,
-                        );
-                    }
+    if let Some((sl, su)) = sel
+        && let Some(me) = place(sl, su)
+    {
+        for (pair, from_me) in [(sl.checked_sub(1), false), (Some(sl), true)] {
+            let Some(p) = pair else { continue };
+            let Some(m) = req.weights.get(p).and_then(|m| m.as_ref()) else {
+                continue;
+            };
+            let others = if from_me {
+                m.strongest_from(su, 400)
+            } else {
+                m.strongest_into(su, 400)
+            };
+            let other_layer = if from_me { p + 1 } else { p };
+            for (o, v) in others {
+                if let Some(pt) = place(other_layer, o) {
+                    draw_arc(
+                        &mut hdr,
+                        (me.0, me.1),
+                        (pt.0, pt.1),
+                        if v >= 0.0 {
+                            [0.6, 1.0, 0.8]
+                        } else {
+                            [1.0, 0.55, 0.45]
+                        },
+                        0.35,
+                        &clip,
+                    );
                 }
             }
         }
@@ -1001,10 +1000,9 @@ pub fn render_brain(req: &BrainRequest) -> (Frame, BrainInfo, BrainLayout) {
         if let Some((sx, sy, _)) = sel
             .filter(|&(sl, _)| sl == l)
             .and_then(|(_, su)| place(l, su))
+            && clip(sx, sy)
         {
-            if clip(sx, sy) {
-                hdr.glow(sx, sy, 5.0 * s, [1.0, 1.0, 1.0], 1.2);
-            }
+            hdr.glow(sx, sy, 5.0 * s, [1.0, 1.0, 1.0], 1.2);
         }
 
         // 2. Every neuron that fired lit up: a glow of density from all of them, and dots over it from as many as
@@ -1172,8 +1170,8 @@ pub fn render_brain(req: &BrainRequest) -> (Frame, BrainInfo, BrainLayout) {
                     outline(
                         &mut c,
                         &Area {
-                            x0: x0,
-                            y0: y0,
+                            x0,
+                            y0,
                             x1: x0 + cw,
                             y1: y0 + ch,
                         },
@@ -1719,13 +1717,19 @@ mod tests {
     #[test]
     fn a_sparse_list_gives_the_same_trace_and_groups_as_the_dense_matrix() {
         let wi = |i: usize, j: usize| {
-            if (i * 5 + j) % 4 == 0 {
+            if (i * 5 + j).is_multiple_of(4) {
                 ((i + j) % 7) as f32 / 3.0 - 0.8
             } else {
                 0.0
             }
         };
-        let wo = |i: usize, c: usize| if (i % 2 == 0) == (c == 0) { 1.0 } else { -1.0 };
+        let wo = |i: usize, c: usize| {
+            if i.is_multiple_of(2) == (c == 0) {
+                1.0
+            } else {
+                -1.0
+            }
+        };
         let mut dense_req = request(100, 100);
         dense_req.weights = vec![Some(matrix(8, 24, wi)), Some(matrix(24, 2, wo))];
         let mut sparse_req = request(100, 100);
@@ -1771,7 +1775,7 @@ mod tests {
     fn the_picked_neurons_links_come_from_a_sparse_list_too() {
         let mut dense_req = request(700, 450);
         let mut sparse_req = request(700, 450);
-        let wi = |i: usize, j: usize| if (i + j) % 3 == 0 { 0.7 } else { 0.0 };
+        let wi = |i: usize, j: usize| if (i + j).is_multiple_of(3) { 0.7 } else { 0.0 };
         dense_req.weights[0] = Some(matrix(8, 24, wi));
         sparse_req.weights[0] = Some(sparse_of(8, 24, wi));
         dense_req.selected = Some((1, 6));
@@ -1786,7 +1790,7 @@ mod tests {
     fn a_big_sparse_network_traces_and_groups_in_a_blink() {
         let big = 200_000;
         let mut r = request(900, 600);
-        let rate = |t: usize, u: usize| (t * 7 + u) % 31 == 0;
+        let rate = |t: usize, u: usize| (t * 7 + u).is_multiple_of(31);
         r.layers[1] = BrainLayer {
             units: big,
             frame: Some(frame(24, big, rate)),
@@ -1832,7 +1836,7 @@ mod tests {
     fn a_layer_over_the_budget_is_a_dim_sample_with_only_the_firing_neurons_lit() {
         let mut r = request(900, 600);
         let big = 60_000;
-        let fire = |t: usize, u: usize| (t * 3 + u) % 40 == 0;
+        let fire = |t: usize, u: usize| (t * 3 + u).is_multiple_of(40);
         r.layers[1] = BrainLayer {
             units: big,
             frame: Some(frame(24, big, fire)),

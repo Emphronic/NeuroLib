@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If you use NeuroLib, please cite it as below."
+title: "NeuroLib"
+type: software
+authors:
+  - alias: "Kostyanikov"
+repository-code: "https://github.com/Emphronic/NeuroLib"
+license: "MIT OR Apache-2.0"

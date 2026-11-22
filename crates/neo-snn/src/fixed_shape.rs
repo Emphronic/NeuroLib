@@ -105,6 +105,14 @@ pub fn apply_layer_update(mut lin: Linear, upd: &LayerUpdate) -> BridgeResult<Li
     Ok(lin)
 }
 
+/// Cuts a projected parameter off the previous autodiff graph and makes it a fresh leaf.
+///
+/// Burn 0.22 consumes the tape on `backward` and has no `retain_graph`, so a parameter that kept
+/// the `w ⊙ mask` node would drag the already consumed graph into the next batch.
+fn leaf<const D: usize>(t: Tensor<D>) -> Tensor<D> {
+    t.detach().require_grad()
+}
+
 /// On-device masks for fast projection without going through the CPU.
 pub struct MaskProjector {
     weight: Vec<Tensor<2>>,
@@ -149,10 +157,10 @@ impl MaskProjector {
     /// `w ← w ⊙ mask`, `bias ← bias ⊙ neuron_mask`. Call after every `optim.step`.
     pub fn project_linear(&self, layer: usize, mut lin: Linear) -> Linear {
         let m = self.weight[layer].clone();
-        lin.weight = lin.weight.map(|w| w.mul(m));
+        lin.weight = lin.weight.map(|w| leaf(w.mul(m)));
         if let Some(b) = lin.bias.take() {
             let nm = self.neuron[layer].clone();
-            lin.bias = Some(b.map(|b| b.mul(nm)));
+            lin.bias = Some(b.map(|b| leaf(b.mul(nm))));
         }
         lin
     }
@@ -164,10 +172,10 @@ impl MaskProjector {
         let nm2: Tensor<2> = self.neuron[mask_layer]
             .clone()
             .reshape([1, self.shapes[mask_layer][1]]);
-        lin.weight = lin.weight.map(|w| w.mul(nm2));
+        lin.weight = lin.weight.map(|w| leaf(w.mul(nm2)));
         if let Some(b) = lin.bias.take() {
             let nm = self.neuron[mask_layer].clone();
-            lin.bias = Some(b.map(|b| b.mul(nm)));
+            lin.bias = Some(b.map(|b| leaf(b.mul(nm))));
         }
         lin
     }

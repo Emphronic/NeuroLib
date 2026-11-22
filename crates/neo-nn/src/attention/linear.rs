@@ -38,13 +38,13 @@ impl LinearAttentionConfig {
         if self.d_model == 0 || self.num_heads == 0 {
             return Err("d_model and num_heads must be > 0".into());
         }
-        if self.d_model % self.num_heads != 0 {
+        if !self.d_model.is_multiple_of(self.num_heads) {
             return Err(format!(
                 "d_model ({}) must be divisible by num_heads ({})",
                 self.d_model, self.num_heads
             ));
         }
-        if !(self.eps > 0.0) || !self.eps.is_finite() {
+        if !(self.eps.is_finite() && self.eps > 0.0) {
             return Err("eps must be finite and > 0".into());
         }
         Ok(())

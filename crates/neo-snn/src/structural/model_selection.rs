@@ -24,8 +24,8 @@ use super::topology::{Neuron, NeuronRole, ParamLimits};
 use crate::scalar::Scalar;
 
 /// Candidate for model change.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ModelCandidate<T = f32> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCandidate<T: Scalar = f32> {
     /// Model and its parameters. The parameters are used as initial ones after
     /// switching; the trained parameters of the current model are not carried over.
     pub model: NeuronModel<T>,
@@ -59,7 +59,7 @@ impl<T: Scalar> ModelCandidate<T> {
 
 /// Automatic model selection settings.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModelSelectionConfig<T = f32> {
+pub struct ModelSelectionConfig<T: Scalar = f32> {
     /// Is automatic selection enabled?
     pub enabled: bool,
     /// Minimum steps for monitoring a neuron.
@@ -231,11 +231,11 @@ pub fn propose_model_switches<T: Scalar>(
                 continue;
             }
             let score = candidate_score(c, n, cfg);
-            let better = best.is_none_or(|(b, cost, _)| {
+            let better = best.clone().is_none_or(|(b, cost, _)| {
                 score > b + T::c(1e-6) || ((score - b).abs() <= T::c(1e-6) && c.cost < cost)
             });
             if better {
-                best = Some((score, c.cost, c.model));
+                best = Some((score, c.cost, c.model.clone()));
             }
         }
         let Some((score, _, model)) = best else {
@@ -298,6 +298,7 @@ pub fn propose_model_switches_evaluated<T: Scalar>(
 
     // First, we order the neurons using heuristics: it does not decide the outcome, but only
     // chooses who to spend a limited sample budget on.
+    #[allow(clippy::type_complexity)]
     let mut plans: Vec<(T, u64, Vec<(T, T, NeuronModel<T>)>)> = Vec::new();
     for n in net.topology().neurons() {
         if !cfg.includes(n.role) || n.stats.steps < cfg.min_observed_steps {
@@ -307,7 +308,7 @@ pub fn propose_model_switches_evaluated<T: Scalar>(
             .candidates
             .iter()
             .filter(|c| !same_variant(&c.model, &n.model))
-            .map(|c| (candidate_score(c, n, cfg), c.cost, c.model))
+            .map(|c| (candidate_score(c, n, cfg), c.cost, c.model.clone()))
             .collect();
         if candidates.is_empty() {
             continue;
@@ -342,7 +343,10 @@ pub fn propose_model_switches_evaluated<T: Scalar>(
             }
             let mut probe = net.probe_copy();
             remaining -= 1;
-            if probe.change_neuron_model(id, model, cfg.migration).is_err() {
+            if probe
+                .change_neuron_model(id, model.clone(), cfg.migration)
+                .is_err()
+            {
                 continue;
             }
             let loss = eval(&mut probe);
@@ -350,7 +354,7 @@ pub fn propose_model_switches_evaluated<T: Scalar>(
                 continue;
             }
             any_finite = true;
-            let better = best.is_none_or(|(b, bcost, _)| {
+            let better = best.clone().is_none_or(|(b, bcost, _)| {
                 loss < b - T::c(1e-6) || ((loss - b).abs() <= T::c(1e-6) && cost < bcost)
             });
             if better {

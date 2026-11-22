@@ -374,7 +374,7 @@ impl Store {
         }
         let b = self.read_bytes(name)?;
         // `T::SIZE` is an associated constant, `as_chunks::<{ T::SIZE }>` is not available on stable.
-        #[allow(clippy::chunks_exact_to_as_chunks)]
+        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
         let values = b.chunks_exact(T::SIZE).map(T::read_le).collect();
         Ok(values)
     }

@@ -104,7 +104,7 @@ pub enum GrowthStrategy {
 
 /// Neuron growth.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NeuronGrowthConfig<T = f32> {
+pub struct NeuronGrowthConfig<T: Scalar> {
     /// Whether neuron growth is enabled.
     pub enabled: bool,
     /// How many consecutive evaluations without improvement count as a plateau.
@@ -163,7 +163,7 @@ impl<T: Scalar> Default for NeuronGrowthConfig<T> {
 
 /// Structural growth.
 #[derive(Debug, Clone, PartialEq)]
-pub struct GrowthConfig<T = f32> {
+pub struct GrowthConfig<T: Scalar = f32> {
     /// Whether growth is enabled.
     pub enabled: bool,
     /// Whether to track coactivity (needed for synapse growth).
@@ -310,7 +310,7 @@ impl<T: Scalar> Default for RollbackConfig<T> {
 
 /// Full structural plasticity configuration.
 #[derive(Debug, Clone, PartialEq)]
-pub struct StructuralConfig<T = f32> {
+pub struct StructuralConfig<T: Scalar = f32> {
     /// Graph limits.
     pub topology: TopologyLimits,
     /// Parameter limits.

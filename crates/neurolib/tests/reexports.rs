@@ -6,6 +6,15 @@ fn snn() {
     let _: Option<neurolib::snn::SnnError> = None;
 }
 
+#[cfg(feature = "snn")]
+#[test]
+fn snn_leaky_scan_forward() {
+    // Fused entry point through the umbrella crate, dispatch by `Device`:
+    // on CubeCL devices — fused CubeCL kernel from neo-synk, otherwise — reference.
+    use neurolib::snn::leaky_scan_forward;
+    let _ = leaky_scan_forward;
+}
+
 #[cfg(feature = "nn")]
 #[test]
 fn nn() {
@@ -20,9 +29,9 @@ fn quant() {
 
 #[cfg(feature = "kernels")]
 #[test]
-fn kernels() {
+fn synk() {
     #[allow(unused_imports)]
-    use neurolib::kernels::{quant, snn};
+    use neurolib::synk::{quant, snn};
 }
 
 #[cfg(feature = "store")]

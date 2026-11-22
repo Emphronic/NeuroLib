@@ -13,6 +13,7 @@
 //!
 //! Everything is determined at one `seed`; the number of evaluation threads does not affect the result.
 
+use super::super::custom::CustomNeuronRegistry;
 use super::super::error::{StructuralError, StructuralResult};
 use super::super::model::{LifParams, NeuronModel, NeuronRole};
 use super::super::network::{DynamicNetwork, EngineConfig};
@@ -105,7 +106,7 @@ pub struct ComplexityPenalty {
 
 /// Evolution settings.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvolutionConfig<T = f32> {
+pub struct EvolutionConfig<T: Scalar = f32> {
     /// Inputs (the same for all individuals).
     pub inputs: usize,
     /// Outputs.
@@ -221,10 +222,10 @@ impl<T: Scalar> EvolutionConfig<T> {
                 "beta_power/threshold_power/param_power/param_min_step must be finite and >= 0",
             );
         }
-        if let InitialConnectivity::Sparse(p) = self.initial {
-            if !prob(p) {
-                return bad("initial", "probability Sparse outside [0, 1]");
-            }
+        if let InitialConnectivity::Sparse(p) = self.initial
+            && !prob(p)
+        {
+            return bad("initial", "probability Sparse outside [0, 1]");
         }
         if !(self.complexity.per_hidden >= 0.0 && self.complexity.per_conn >= 0.0) {
             return bad("complexity", "penalties cannot be negative");
@@ -244,7 +245,7 @@ impl<T: Scalar> EvolutionConfig<T> {
 
 /// Individual of a generation.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Individual<T = f32> {
+pub struct Individual<T: Scalar = f32> {
     /// Genome.
     pub genome: Genome<T>,
     /// Fitness returned from assessment (`NaN` before assessment).
@@ -257,7 +258,7 @@ pub struct Individual<T = f32> {
 
 /// View.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Species<T = f32> {
+pub struct Species<T: Scalar = f32> {
     /// Number (not repeated).
     pub id: u32,
     /// Representative: new individuals are compared with it.
@@ -274,7 +275,7 @@ pub struct Species<T = f32> {
 
 /// The best genome ever.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Champion<T = f32> {
+pub struct Champion<T: Scalar = f32> {
     /// Genome.
     pub genome: Genome<T>,
     /// Fitness.
@@ -314,7 +315,7 @@ pub struct GenerationReport {
 
 /// Population.
 #[derive(Debug, Clone)]
-pub struct Population<T = f32> {
+pub struct Population<T: Scalar = f32> {
     cfg: EvolutionConfig<T>,
     rng: Rng64,
     tracker: InnovationTracker,
@@ -336,6 +337,7 @@ impl<T: Scalar> Population<T> {
         for _ in 0..cfg.population {
             let output_model = cfg
                 .output_model
+                .clone()
                 .unwrap_or(NeuronModel::Lif(cfg.output_params));
             let mut g = Genome::bare(cfg.inputs, cfg.outputs, output_model);
             for i in 0..cfg.inputs {
@@ -820,7 +822,10 @@ impl<T: Scalar> Population<T> {
     /// Save state (`NPOP` magic; version 2 for `f32`, version 3 for `f64` - after version
     /// is the width of the gene values). Settings are not saved: they are transferred
     /// when loading; continuation with the same settings gives the same course of evolution.
-    pub fn save(&self) -> Vec<u8> {
+    ///
+    /// Fails with a clear error when a genome contains a custom model without a codec
+    /// (see [`StructuralError::UnknownCustomModel`]).
+    pub fn save(&self) -> StructuralResult<Vec<u8>> {
         let wide = std::mem::size_of::<T>() > 4;
         let mut w = W::with_width(wide);
         w.buf.extend_from_slice(b"NPOP");
@@ -837,7 +842,7 @@ impl<T: Scalar> Population<T> {
         w.f32(self.threshold);
         w.len(self.individuals.len());
         for i in &self.individuals {
-            i.genome.write(&mut w);
+            i.genome.write(&mut w)?;
             w.f32(i.raw);
             w.f32(i.effective);
             w.bool(i.valid);
@@ -845,7 +850,7 @@ impl<T: Scalar> Population<T> {
         w.len(self.species.len());
         for s in &self.species {
             w.u32(s.id);
-            s.representative.write(&mut w);
+            s.representative.write(&mut w)?;
             w.f32(s.best);
             w.u32(s.stagnation);
             w.u32(s.age);
@@ -856,17 +861,26 @@ impl<T: Scalar> Population<T> {
             None => w.bool(false),
             Some(c) => {
                 w.bool(true);
-                c.genome.write(&mut w);
+                c.genome.write(&mut w)?;
                 w.f32(c.raw);
                 w.f32(c.effective);
                 w.u64(c.generation);
             }
         }
-        w.buf
+        Ok(w.buf)
     }
 
     /// Restore the population. `cfg` must match in inputs, outputs and population size.
     pub fn load(bytes: &[u8], cfg: EvolutionConfig<T>) -> StructuralResult<Self> {
+        Self::load_with_registry(bytes, cfg, &CustomNeuronRegistry::new())
+    }
+
+    /// Like [`Population::load`], with the [`CustomNeuronRegistry`] for user-defined models.
+    pub fn load_with_registry(
+        bytes: &[u8],
+        cfg: EvolutionConfig<T>,
+        registry: &CustomNeuronRegistry<T>,
+    ) -> StructuralResult<Self> {
         cfg.validate()?;
         if bytes.len() < 8 || &bytes[..4] != b"NPOP" {
             return Err(err("this is not a population (no NPOP magic)"));
@@ -892,7 +906,7 @@ impl<T: Scalar> Population<T> {
         let threshold = r.f32()?;
         let mut individuals: Vec<Individual<T>> = Vec::new();
         for _ in 0..r.len(MAX_ITEMS)? {
-            let genome = Genome::<T>::read(&mut r, version)?;
+            let genome = Genome::<T>::read(&mut r, version, registry)?;
             individuals.push(Individual {
                 genome,
                 raw: r.f32()?,
@@ -910,7 +924,7 @@ impl<T: Scalar> Population<T> {
         let mut species: Vec<Species<T>> = Vec::new();
         for _ in 0..r.len(MAX_ITEMS)? {
             let id = r.u32()?;
-            let representative = Genome::<T>::read(&mut r, version)?;
+            let representative = Genome::<T>::read(&mut r, version, registry)?;
             let (best, stagnation, age) = (r.f32()?, r.u32()?, r.u32()?);
             let mut members = Vec::new();
             for _ in 0..r.len(MAX_ITEMS)? {
@@ -930,7 +944,7 @@ impl<T: Scalar> Population<T> {
             });
         }
         let champion = if r.bool()? {
-            let genome = Genome::<T>::read(&mut r, version)?;
+            let genome = Genome::<T>::read(&mut r, version, registry)?;
             Some(Champion {
                 genome,
                 raw: r.f32()?,

@@ -151,6 +151,7 @@ fn apply_bound(w: Tensor<2>, bound: WeightBound) -> Tensor<2> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Classical pair-based STDP (Song, Miller & Abbott, 2000).
 ///
 /// `w` — weights `[out_features, in_features]` (the same layout as an ordinary
@@ -524,6 +525,7 @@ pub fn triplet_update_with_f_and_dep(
     apply_bound(w + dw, bound)
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Eligibility trace for reward-modulated STDP (R-STDP): computes the same
 /// pair-STDP "pressure" on the weight but does not apply it — accumulates it
 /// in a separate buffer of the same shape as the weights, with its own

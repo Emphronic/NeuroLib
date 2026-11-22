@@ -67,7 +67,7 @@
 //!
 //! `forward_parallel` delegates this scan to
 //! [`super::leaky_scan_op::leaky_scan_fused`], which calls
-//! `neo_synk::snn::leaky_scan_forward`. On a CubeCL device (wgpu / CUDA / ROCm)
+//! `neo_snn::leaky_scan_forward`. On a CubeCL device (wgpu / CUDA / ROCm)
 //! that runs neo-synk's fused CubeCL kernel with a hand-written backward; on any
 //! other device it falls back to plain tensor ops (autodiff works automatically
 //! in both cases). The whole `[batch, steps, features]`
@@ -190,7 +190,7 @@ impl LeakyParallel {
     }
 
     /// Fused path for `ResetMode::None`: the whole sequence's membrane via
-    /// [`neo_synk::snn::leaky_scan_forward`], then
+    /// [`leaky_scan_forward`](crate::leaky_scan_forward), then
     /// spike threshold, winner-take-all (if `inhibition == true`) and the
     /// graded factor — one pass over the whole
     /// `[batch, time, features]`.
@@ -270,7 +270,7 @@ impl LeakyParallel {
 /// tensor ops rather than an explicit `[T,T]` weight matrix.
 ///
 /// The production path (`forward_parallel`) delegates to
-/// [`neo_synk::snn::leaky_scan_forward`] instead, which runs a fused CubeCL
+/// [`leaky_scan_forward`](crate::leaky_scan_forward) instead, which runs a fused CubeCL
 /// kernel on GPU devices; this function is kept as a backend-agnostic
 /// plain-tensor-op scan, and is exercised directly by
 /// `scan_result_independent_of_batch_and_feature_broadcast` below.
@@ -313,6 +313,7 @@ fn hillis_steele_linear_scan(
     while d < steps {
         let valid = steps - d;
 
+        #[allow(clippy::single_range_in_vec_init)]
         let a_tail = a.clone().slice([0..valid]);
         let identity_a = Tensor::<1>::ones([d], &device);
         let a_shift: Tensor<1> = Tensor::cat(vec![identity_a, a_tail], 0);
@@ -528,8 +529,10 @@ mod parallel_tests {
         let _ = spikes;
 
         let mut expected = vec![0.0f64; num_steps];
+        #[allow(clippy::needless_range_loop)]
         for t in 0..num_steps {
             let mut acc = 0.0f64;
+            #[allow(clippy::needless_range_loop)]
             for k in 0..=t {
                 acc += (beta as f64).powi((t - k) as i32) * raw[k] as f64;
             }
@@ -594,6 +597,7 @@ mod parallel_tests {
         let dup_vec = vec3(dup_out);
 
         for b in 0..batch {
+            #[allow(clippy::needless_range_loop)]
             for t in 0..steps {
                 for f in 0..features {
                     let idx = b * steps * features + t * features + f;

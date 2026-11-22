@@ -22,8 +22,8 @@ const LANES: usize = 8;
 pub fn fold(samples: &[f32], acc: [f32; 2]) -> [f32; 2] {
     let mut lo = [acc[0]; LANES];
     let mut hi = [acc[1]; LANES];
-    let mut chunks = samples.chunks_exact(LANES);
-    for c in &mut chunks {
+    let (chunks, remainder) = samples.as_chunks::<LANES>();
+    for c in chunks {
         for i in 0..LANES {
             lo[i] = if c[i] < lo[i] { c[i] } else { lo[i] };
             hi[i] = if c[i] > hi[i] { c[i] } else { hi[i] };
@@ -33,7 +33,7 @@ pub fn fold(samples: &[f32], acc: [f32; 2]) -> [f32; 2] {
     for i in 0..LANES {
         out = merge(out, [lo[i], hi[i]]);
     }
-    for &v in chunks.remainder() {
+    for &v in remainder {
         out = merge(out, [v, v]);
     }
     out

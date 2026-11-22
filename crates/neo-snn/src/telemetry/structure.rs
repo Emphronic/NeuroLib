@@ -88,7 +88,7 @@ impl TopologySnapshot {
                 id: n.id.0,
                 kind: n.role,
                 polarity: n.polarity,
-                model: n.model,
+                model: n.model.clone(),
                 rate: n.stats.rate_ema,
                 born_step: n.meta.born_step,
             })
@@ -274,10 +274,10 @@ pub fn assess_structure(
     // The quality has deteriorated relative to the best.
     if let (Some(best), Some(now), true) =
         (loss.best(), loss.recent_mean(4), loss.values().len() >= 8)
+        && now > best * 1.25 + 0.02
     {
-        if now > best * 1.25 + 0.02 {
-            let touched = events.iter().any(|e| e.outcome == Outcome::Applied);
-            out.push(f(
+        let touched = events.iter().any(|e| e.outcome == Outcome::Applied);
+        out.push(f(
                 Severity::Problem,
                 format!("quality has deteriorated: loss {now:.3} with better {best:.3}"),
                 if touched {
@@ -286,7 +286,6 @@ pub fn assess_structure(
                     "the structure did not change: the reason is in training (lr, data), not in topology"
                 },
             ));
-        }
     }
 
     // Kickbacks and refusals.
@@ -352,7 +351,7 @@ pub fn assess_structure(
     if out.is_empty() {
         out.push(f(Severity::Ok, "structure is ok".into(), ""));
     }
-    out.sort_by(|a, b| b.severity.cmp(&a.severity));
+    out.sort_by_key(|a| std::cmp::Reverse(a.severity));
     out
 }
 

@@ -123,7 +123,7 @@ impl NetLayout {
                 if dx <= radius + 4.0 && fy >= layer.top && fy <= layer.bottom && span > 0.0 {
                     let u = (((fy - layer.top) * h / span * layer.units as f32) as usize)
                         .min(layer.units - 1);
-                    if best.map_or(true, |(_, b)| dx < b) {
+                    if best.is_none_or(|(_, b)| dx < b) {
                         best = Some(((l, u), dx));
                     }
                 }
@@ -131,7 +131,7 @@ impl NetLayout {
             }
             for (u, &(x, y)) in layer.nodes.iter().enumerate() {
                 let d = (((x - fx) * w).powi(2) + ((y - fy) * h).powi(2)).sqrt();
-                if d <= radius && best.map_or(true, |(_, b)| d < b) {
+                if d <= radius && best.is_none_or(|(_, b)| d < b) {
                     best = Some(((l, u), d));
                 }
             }
@@ -405,7 +405,8 @@ fn draw_particles(h: &mut Hdr, req: &NetworkRequest, s: f32) {
         let (u, v) = (hash01(i, 2, 0), hash01(i, 3, 0));
         let x = (u - (req.camera.cx - 0.5) * depth * 0.30 * req.camera.zoom).rem_euclid(1.0) * w;
         let y = (v - (req.camera.cy - 0.5) * depth * 0.30 * req.camera.zoom).rem_euclid(1.0) * hh;
-        let twinkle = 0.65 + 0.35 * (req.phase * 1.7 + hash01(i, 4, 0) * 6.28).sin();
+        let twinkle =
+            0.65 + 0.35 * (req.phase * 1.7 + hash01(i, 4, 0) * std::f32::consts::TAU).sin();
         let e = (0.10 + 0.55 * hash01(i, 5, 0)) * twinkle * depth;
         let tint = [0.75 + 0.2 * hash01(i, 6, 0), 0.82, 1.0];
         h.glow(x, y, (0.5 + 1.1 * hash01(i, 7, 0)) * s, tint, e);
@@ -573,7 +574,7 @@ fn draw_classic(
             h.glow(x, y, bead_r, rgb, e);
         };
         match links {
-            Some(m) => m.for_each(|i, j, w| bead(i, j, w)),
+            Some(m) => m.for_each(&mut bead),
             None => {
                 for i in 0..units[l] {
                     for j in 0..units[l + 1] {
@@ -595,7 +596,7 @@ fn draw_classic(
             let (x, y) = px(l, u);
             let rate = frame.map_or(0.0, |f| f.unit_rate(u).clamp(0.0, 1.0));
             let fired = frame.is_some_and(|f| f.spiked(f.steps - 1, u));
-            let near = sel.map_or(true, |(sl, su)| (sl, su) == (l, u) || sl.abs_diff(l) == 1);
+            let near = sel.is_none_or(|(sl, su)| (sl, su) == (l, u) || sl.abs_diff(l) == 1);
             let k = if near { 1.0 } else { 0.30 };
             h.glow(x, y, dot, [0.85, 0.95, 1.0], (1.3 + 2.6 * rate) * k);
             if fired {
@@ -1026,7 +1027,7 @@ mod tests {
 
     /// A big network: `n` hidden neurons between 8 inputs and 2 outputs, `per` sparse links from each input and into each output.
     fn big_request(n: usize, per: usize, w: u32, h: u32) -> NetworkRequest {
-        let fire = |t: usize, u: usize| (t * 7 + u) % 23 == 0;
+        let fire = |t: usize, u: usize| (t * 7 + u).is_multiple_of(23);
         let (mut f1, mut t1, mut w1) = (Vec::new(), Vec::new(), Vec::new());
         for i in 0..8u32 {
             for k in 0..per as u32 {
@@ -1385,7 +1386,7 @@ mod tests {
             (0..8u32 * 40).map(|k| (k * 499) % n as u32).collect(),
             vec![0.8; 320],
         ));
-        let (green, _) = mean(&render_network(&r).0).clone().into();
+        let (green, _) = mean(&render_network(&r).0);
         let (g_r, g_g) = mean(&render_network(&r).0);
         r.weights[1] = Some(sparse(
             n,

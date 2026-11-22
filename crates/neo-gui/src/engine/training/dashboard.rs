@@ -205,6 +205,7 @@ pub fn layer_color(p: &Palette, layer: usize) -> Pixel {
 
 // ─── the image ──────────────────────────────────────────────────────────
 
+#[allow(clippy::field_reassign_with_default)]
 pub fn render_dashboard(req: &DashboardRequest) -> (Frame, DashboardInfo) {
     let (w, h) = (req.width.max(1), req.height.max(1));
     let mut frame = Frame::new(w, h);

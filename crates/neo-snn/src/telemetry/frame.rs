@@ -391,12 +391,12 @@ mod tests {
     use super::*;
 
     fn frame(steps: usize, units: usize, f: impl Fn(usize, usize) -> bool) -> SpikeFrame {
-        SpikeFrame::from_fn(steps, units, |t, u| f(t, u))
+        SpikeFrame::from_fn(steps, units, f)
     }
 
     #[test]
     fn from_bits_and_from_fn_agree() {
-        let f = |t: usize, u: usize| (t * 7 + u * 3) % 5 == 0;
+        let f = |t: usize, u: usize| (t * 7 + u * 3).is_multiple_of(5);
         let bits: Vec<bool> = (0..13)
             .flat_map(|t| (0..11).map(move |u| (t, u)))
             .map(|(t, u)| f(t, u))
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn statistics_match_brute_force() {
         // Size 13x11 = 143 bits - not a multiple of 64, checks the tail of the word.
-        let f = |t: usize, u: usize| (t + 2 * u) % 4 == 0 || u == 3;
+        let f = |t: usize, u: usize| (t + 2 * u).is_multiple_of(4) || u == 3;
         let fr = frame(13, 11, f);
 
         let mut total = 0;

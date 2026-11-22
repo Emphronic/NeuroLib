@@ -48,7 +48,7 @@ pub trait RecordingSource: Send + Sync {
         let n = check_read_stored(info, channels, &samples, out.len())?;
         let mut values = vec![0.0f32; channels.len() * n];
         self.read(channels, samples, &mut values)?;
-        for (dst, v) in out.chunks_exact_mut(4).zip(values) {
+        for (dst, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(values) {
             dst.copy_from_slice(&v.to_le_bytes());
         }
         Ok(())
@@ -104,7 +104,7 @@ pub fn check_read_stored(
     out_len: usize,
 ) -> DspResult<usize> {
     let bytes = info.format.bytes();
-    if out_len % bytes != 0 {
+    if !out_len.is_multiple_of(bytes) {
         return Err(DspError::ShapeMismatch {
             expected: vec![channels.len(), bytes],
             actual: vec![out_len],

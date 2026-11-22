@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_bytes_len_and_bits() {
-        let packed = quantize_bf16(&vec![1.0f32; 10]);
+        let packed = quantize_bf16(&[1.0f32; 10]);
         assert_eq!(packed.bytes_len(), 20);
         assert_eq!(packed.effective_bits_per_weight(), 16.0);
     }

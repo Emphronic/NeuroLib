@@ -98,7 +98,7 @@ fn mlp_converted_matches_ann() {
     let ann = mlp();
     let x = batch2(6, 8, 10);
     let want = ann.forward(x.clone()).unwrap();
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let got = snn.run(&x, 400).unwrap().output;
     let scale = max_abs(&want.to_vec("t").unwrap()).max(1.0);
     let (max_err, _) = errors(&want, &got);
@@ -113,7 +113,7 @@ fn error_shrinks_with_more_steps() {
     let ann = mlp();
     let x = batch2(6, 8, 11);
     let want = ann.forward(x.clone()).unwrap();
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let out = snn.run(&x, 300).unwrap();
     let (_, e_short) = errors(&want, &out.per_step[9]);
     let (_, e_long) = errors(&want, &out.per_step[299]);
@@ -185,7 +185,7 @@ fn scales_follow_calibration_statistic() {
 
     let max = convert(
         &ann,
-        &[x.clone()],
+        std::slice::from_ref(&x),
         &ConvertConfig {
             norm: NormMode::Max,
             ..Default::default()
@@ -195,7 +195,7 @@ fn scales_follow_calibration_statistic() {
     assert_eq!(max.scales(), &[3.0]);
     let p100 = convert(
         &ann,
-        &[x.clone()],
+        std::slice::from_ref(&x),
         &ConvertConfig {
             norm: NormMode::Percentile(100.0),
             ..Default::default()
@@ -222,7 +222,7 @@ fn normalization_keeps_activations_within_firing_range() {
     let ann = mlp();
     let x = batch2(16, 8, 14);
     let net = ann.canonicalize().unwrap();
-    let scales = activation_scales(&net, &[x.clone()], NormMode::Max).unwrap();
+    let scales = activation_scales(&net, std::slice::from_ref(&x), NormMode::Max).unwrap();
     let mut seen = Vec::new();
     net.forward_observe(x, &mut |i, a| {
         seen.push((i, max_abs(&a.to_vec("t").unwrap())));
@@ -250,7 +250,7 @@ fn conv_net_converted_matches_ann() {
     let x = batch4(4, 1, 8, 8, 15);
     let want = ann.forward(x.clone()).unwrap();
     assert_eq!(want.dims(), vec![4, 3]);
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     assert_eq!(snn.spiking_layers(), 2);
     let got = snn.run(&x, 500).unwrap().output;
     let scale = max_abs(&want.to_vec("t").unwrap()).max(1.0);
@@ -270,7 +270,7 @@ fn network_ending_with_spiking_layer_is_rescaled() {
         .relu();
     let x = batch2(5, 6, 16);
     let want = ann.forward(x.clone()).unwrap();
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let got = snn.run(&x, 500).unwrap().output;
     let scale = max_abs(&want.to_vec("t").unwrap()).max(1.0);
     let (max_err, _) = errors(&want, &got);
@@ -286,7 +286,7 @@ fn stats_and_accuracy_over_time() {
     let x = batch2(12, 8, 17);
     let want = ann.forward(x.clone()).unwrap().to_vec("t").unwrap();
     let labels: Vec<usize> = want.chunks(4).map(argmax).collect();
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let out = snn.run(&x, 200).unwrap();
 
     assert_eq!(out.stats.len(), 2);
@@ -319,7 +319,7 @@ fn rate_encoded_input_approximates_ann() {
         },
         ..Default::default()
     };
-    let snn = convert(&ann, &[x.clone()], &cfg).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &cfg).unwrap();
     let got = snn.run(&x, 3000).unwrap().output;
     let scale = max_abs(&want.to_vec("t").unwrap()).max(1.0);
     let (_, mean_err) = errors(&want, &got);
@@ -340,7 +340,7 @@ fn zero_reset_runs_and_is_finite() {
         },
         ..Default::default()
     };
-    let snn = convert(&ann, &[x.clone()], &cfg).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &cfg).unwrap();
     let out = snn.run(&x, 50).unwrap().output.to_vec("t").unwrap();
     assert!(out.iter().all(|v| v.is_finite()));
 }
@@ -358,7 +358,7 @@ fn half_initial_membrane_reduces_short_horizon_error() {
             },
             ..Default::default()
         };
-        let snn = convert(&ann, &[x.clone()], &cfg).unwrap();
+        let snn = convert(&ann, std::slice::from_ref(&x), &cfg).unwrap();
         errors(&want, &snn.run(&x, 20).unwrap().output).1
     };
     assert!(err_for(0.5) < err_for(0.0));
@@ -368,7 +368,7 @@ fn half_initial_membrane_reduces_short_horizon_error() {
 fn step_by_step_equals_run() {
     let ann = mlp();
     let x = batch2(3, 8, 24);
-    let snn = convert(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = convert(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let mut state = snn.init_state();
     for _ in 0..30 {
         let (_, s) = snn.step(&x, state).unwrap();
@@ -394,7 +394,7 @@ fn unsupported_structures_are_rejected_with_reasons() {
         .conv2d(&conv(1, 1, 1, 41))
         .avg_pool2d([1, 1])
         .relu();
-    assert!(err_what(convert(&a, &[x.clone()], &cfg)).contains("ReLU"));
+    assert!(err_what(convert(&a, std::slice::from_ref(&x), &cfg)).contains("ReLU"));
     let a = AnnNet::new().relu().linear(&l);
     assert!(err_what(a.canonicalize()).contains("ReLU"));
 
@@ -424,7 +424,7 @@ fn bad_config_is_rejected() {
         },
         ..Default::default()
     };
-    assert!(convert(&ann, &[x.clone()], &bad_reset).is_err());
+    assert!(convert(&ann, std::slice::from_ref(&x), &bad_reset).is_err());
     let bad_init = ConvertConfig {
         spike: SpikeConfig {
             v_init: 1.0,
@@ -432,7 +432,7 @@ fn bad_config_is_rejected() {
         },
         ..Default::default()
     };
-    assert!(convert(&ann, &[x.clone()], &bad_init).is_err());
+    assert!(convert(&ann, std::slice::from_ref(&x), &bad_init).is_err());
     let bad_p = ConvertConfig {
         norm: NormMode::Percentile(0.0),
         ..Default::default()

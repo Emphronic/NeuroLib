@@ -177,6 +177,7 @@ fn reglu_param_parity_hidden_size() {
 #[test]
 fn gated_matches_manual_formula_for_every_activation() {
     // Independent “reference” activation for each option.
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(GateActivation, fn(Tensor<2>) -> Tensor<2>)> = vec![
         (GateActivation::Gelu, |t| gelu(t)),
         (GateActivation::Relu, |t| relu(t)),

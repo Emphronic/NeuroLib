@@ -368,8 +368,8 @@ impl StdpConv2d {
             )));
         }
         if config.groups < 1
-            || config.c_in % config.groups != 0
-            || config.c_out % config.groups != 0
+            || !config.c_in.is_multiple_of(config.groups)
+            || !config.c_out.is_multiple_of(config.groups)
         {
             return Err(invalid(format!(
                 "groups={} must be >= 1 and divide c_in={} and c_out={}",
@@ -387,10 +387,9 @@ impl StdpConv2d {
             tau_post_slow,
             ..
         } = config.rule
+            && !(tau_pre_slow > 0.0 && tau_post_slow > 0.0)
         {
-            if !(tau_pre_slow > 0.0 && tau_post_slow > 0.0) {
-                return Err(invalid("slow triplet constants STDP must be positive"));
-            }
+            return Err(invalid("slow triplet constants STDP must be positive"));
         }
         if let Some(h) = config.bias_homeostasis {
             if !config.bias {

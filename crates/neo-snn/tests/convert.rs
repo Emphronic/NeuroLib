@@ -29,7 +29,7 @@ fn hand_made_classifier_keeps_its_decisions_after_conversion() {
     let x = Act::D2(Tensor::<1>::from_floats(xs.as_slice(), &dev()).reshape([4, 2]));
     let labels = [0usize, 1, 0, 1];
 
-    let snn = ann_to_snn(&ann, &[x.clone()], &ConvertConfig::default()).unwrap();
+    let snn = ann_to_snn(&ann, std::slice::from_ref(&x), &ConvertConfig::default()).unwrap();
     let out = snn.run(&x, 100).unwrap();
 
     let acc = out.accuracy_over_time(&labels).unwrap();

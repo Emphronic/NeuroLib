@@ -9,6 +9,8 @@
 //! CPU reference on the `leaky_scan_bench` sizes. Reproduce with
 //! `cargo run --release -p neo-synk --features wgpu,fusion --example leaky_scan_bench`.
 //!
+//! From user code prefer the re-export `neo_snn::leaky_scan_forward` (`neurolib::snn::leaky_scan_forward`).
+//!
 //! * [`leaky_scan_forward`] — the entry point `neo-snn` calls. On a CubeCL
 //!   device (wgpu / CUDA / ROCm; features `wgpu`, `cuda`, `rocm`) it launches
 //!   the fused kernel from [`gpu`] (one launch instead of the O(log T) tensor
@@ -163,8 +165,8 @@ mod reference_tests {
         let mut expected = Vec::with_capacity(n);
         for t in 0..n {
             let mut s = 0.0f32;
-            for k in 0..=t {
-                s += beta.powi((t - k) as i32) * x[k];
+            for (k, xk) in x.iter().enumerate().take(t + 1) {
+                s += beta.powi((t - k) as i32) * xk;
             }
             expected.push(s);
         }
@@ -210,8 +212,8 @@ mod reference_tests {
         let mut expected = Vec::with_capacity(n);
         for t in 0..n {
             let mut s = 0.0f32;
-            for k in 0..=t {
-                s += beta.powi((t - k) as i32) * x[k];
+            for (k, xk) in x.iter().enumerate().take(t + 1) {
+                s += beta.powi((t - k) as i32) * xk;
             }
             expected.push(s);
         }
@@ -249,8 +251,8 @@ mod reference_tests {
         let x1f0 = [1.0f32, 2.0, -0.5, 0.25];
         for t in 0..4 {
             let mut expected = 0.0f32;
-            for k in 0..=t {
-                expected += beta.powi((t - k) as i32) * x1f0[k];
+            for (k, xk) in x1f0.iter().enumerate().take(t + 1) {
+                expected += beta.powi((t - k) as i32) * xk;
             }
             let g = got[8 + t * 2];
             assert!(

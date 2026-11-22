@@ -271,14 +271,14 @@ fn check_layers(ctrl: &FixedShapeController, layers: &[LayerBlob]) -> Structural
                 actual: blob.weights.len(),
             });
         }
-        if let Some(b) = &blob.bias {
-            if b.len() != sp.out_features {
-                return Err(StructuralError::InputSize {
-                    op: "Bundle(layer bias)",
-                    expected: sp.out_features,
-                    actual: b.len(),
-                });
-            }
+        if let Some(b) = &blob.bias
+            && b.len() != sp.out_features
+        {
+            return Err(StructuralError::InputSize {
+                op: "Bundle(layer bias)",
+                expected: sp.out_features,
+                actual: b.len(),
+            });
         }
         if blob
             .weights
@@ -334,8 +334,10 @@ impl<'a> Reader<'a> {
         let bytes = n.checked_mul(4).ok_or_else(|| err("size overflow"))?;
         Ok(self
             .take(bytes)?
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect())
     }
 }

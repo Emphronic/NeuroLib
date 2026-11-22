@@ -21,7 +21,7 @@ impl MemoryRecording {
         channels: usize,
         sample_rate_hz: f64,
     ) -> DspResult<Self> {
-        if channels == 0 || data.len() % channels != 0 {
+        if channels == 0 || !data.len().is_multiple_of(channels) {
             return Err(DspError::ShapeMismatch {
                 expected: vec![channels],
                 actual: vec![data.len()],

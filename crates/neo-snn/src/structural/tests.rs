@@ -454,13 +454,13 @@ fn state_migration_policies_convert_explicitly() {
     let izh = NeuronModel::Izhikevich(IzhikevichParams::fast_spiking());
     let source = NeuronState::Lif(LifState { mem: 0.42 });
 
-    let reset = source.migrate_to(&izh, StateMigration::Reset);
+    let reset = source.clone().migrate_to(&izh, StateMigration::Reset);
     assert!(matches!(
         reset,
         NeuronState::Izhikevich(s)
             if s.v == IzhikevichParams::<f32>::fast_spiking().c && s.u == 0.0
     ));
-    let membrane = source.migrate_to(&izh, StateMigration::Membrane);
+    let membrane = source.clone().migrate_to(&izh, StateMigration::Membrane);
     assert!(matches!(
         membrane,
         NeuronState::Izhikevich(s) if s.v == 0.42 && s.u == 0.0
@@ -468,17 +468,20 @@ fn state_migration_policies_convert_explicitly() {
     // Different families: Compatible drops rather than drags dimensionless
     // membrane LIF to millivolts Izhikevich.
     assert_eq!(
-        source.migrate_to(&izh, StateMigration::Compatible),
+        source.clone().migrate_to(&izh, StateMigration::Compatible),
         izh.init_state()
     );
     // One family: membrane is transferred, adaptation is initialized.
-    let same = source.migrate_to(&alif, StateMigration::Compatible);
+    let same = source.clone().migrate_to(&alif, StateMigration::Compatible);
     assert!(matches!(
         same,
         NeuronState::AdaptiveLif(s) if s.mem == 0.42 && s.adaptation == 0.0
     ));
     // The same model: Compatible saves everything, Reset resets everything.
-    assert_eq!(source.migrate_to(&lif, StateMigration::Compatible), source);
+    assert_eq!(
+        source.clone().migrate_to(&lif, StateMigration::Compatible),
+        source
+    );
     assert_eq!(
         source.migrate_to(&lif, StateMigration::Reset),
         NeuronState::Lif(LifState::default())
@@ -1573,7 +1576,7 @@ fn trained() -> (DynamicNetwork, StructuralPlasticityController) {
 fn checkpoint_roundtrip_restores_everything() {
     let (n, ctl) = trained();
     assert!(!ctl.log().is_empty());
-    let bytes = save_checkpoint(&n, &ctl, b"optimizer-state");
+    let bytes = save_checkpoint(&n, &ctl, b"optimizer-state").unwrap();
     let c = load_checkpoint(&bytes).unwrap();
     assert_eq!(*c.network.topology(), *n.topology());
     assert_eq!(c.network.step_count(), n.step_count());
@@ -1589,7 +1592,7 @@ fn checkpoint_roundtrip_restores_everything() {
     assert_eq!(c.controller.best(), ctl.best());
     assert_eq!(c.extra, b"optimizer-state");
     assert_eq!(
-        save_checkpoint(&c.network, &c.controller, &c.extra),
+        save_checkpoint(&c.network, &c.controller, &c.extra).unwrap(),
         bytes,
         "re-saving is identical"
     );
@@ -1598,7 +1601,7 @@ fn checkpoint_roundtrip_restores_everything() {
 #[test]
 fn restored_run_continues_identically_to_uninterrupted_run() {
     let (mut a, mut ca) = trained();
-    let bytes = save_checkpoint(&a, &ca, &[]);
+    let bytes = save_checkpoint(&a, &ca, &[]).unwrap();
     let Checkpoint {
         network: mut bnet,
         controller: mut cb,
@@ -1623,7 +1626,7 @@ fn restored_run_continues_identically_to_uninterrupted_run() {
 #[test]
 fn checkpoint_rejects_corruption_truncation_and_future_versions() {
     let (n, ctl) = trained();
-    let bytes = save_checkpoint(&n, &ctl, &[]);
+    let bytes = save_checkpoint(&n, &ctl, &[]).unwrap();
     let mut flipped = bytes.clone();
     flipped[bytes.len() / 2] ^= 0x55;
     assert!(
@@ -2004,7 +2007,8 @@ fn growth_can_create_specialized_alif_neuron() {
 }
 
 #[test]
-fn dense_executor_rejects_heterogeneous_networks() {
+fn dense_executor_supports_alif_inhibition_and_rejects_others() {
+    // ALIF is supported now.
     let mut t = topo(TopologyLimits::default());
     inp(&mut t);
     t.add_neuron_with(
@@ -2016,14 +2020,29 @@ fn dense_executor_rejects_heterogeneous_networks() {
     )
     .unwrap();
     out(&mut t, 0.9, 1.0);
-    assert!(super::dense::DenseNet::compile(&t).is_err());
+    assert!(super::dense::DenseNet::compile(&t).is_ok());
 
+    // Inhibition is supported (signs of weights).
     let mut t = topo(TopologyLimits::default());
     inp(&mut t);
     t.add_neuron_with(
         NeuronRole::Hidden,
         NeuronPolarity::Inhibitory,
         LifParams::default(),
+        Origin::Initial,
+        b(),
+    )
+    .unwrap();
+    out(&mut t, 0.9, 1.0);
+    assert!(super::dense::DenseNet::compile(&t).is_ok());
+
+    // Unsupported models are still rejected.
+    let mut t = topo(TopologyLimits::default());
+    inp(&mut t);
+    t.add_neuron_with(
+        NeuronRole::Hidden,
+        NeuronPolarity::Excitatory,
+        IzhikevichParams::regular_spiking(),
         Origin::Initial,
         b(),
     )
@@ -2041,16 +2060,21 @@ fn scaled_migration_preserves_position_between_rest_and_threshold() {
 
     // LIF halfway to the threshold.
     let source: NeuronState = NeuronState::Lif(LifState { mem: 0.5 });
-    for target in [izh, adex, hh] {
+    for target in [&izh, &adex, &hh] {
         let (rest, fire) = target.membrane_range().unwrap();
-        let next = source.migrate_between(&lif, &target, StateMigration::Scaled);
-        assert!(next.matches(&target));
+        let next = source
+            .clone()
+            .migrate_between(&lif, target, StateMigration::Scaled);
+        assert!(next.matches(target));
         assert!(next.is_finite());
         let expected = rest + 0.5 * (fire - rest);
         assert!((next.mem() - expected).abs() < 1e-3, "{target:?}");
     }
     // Fast variables are in equilibrium, not in “alien” units.
-    let NeuronState::Izhikevich(s) = source.migrate_between(&lif, &izh, StateMigration::Scaled)
+    let NeuronState::Izhikevich(s) =
+        source
+            .clone()
+            .migrate_between(&lif, &izh, StateMigration::Scaled)
     else {
         panic!("expected status Izhikevich");
     };
@@ -2071,11 +2095,15 @@ fn scaled_migration_preserves_position_between_rest_and_threshold() {
 
     // The same model - the state is not affected; Compatible/Membrane does not change.
     assert_eq!(
-        source.migrate_between(&lif, &lif, StateMigration::Scaled),
+        source
+            .clone()
+            .migrate_between(&lif, &lif, StateMigration::Scaled),
         source
     );
     assert_eq!(
-        source.migrate_between(&lif, &izh, StateMigration::Compatible),
+        source
+            .clone()
+            .migrate_between(&lif, &izh, StateMigration::Compatible),
         izh.init_state()
     );
 }
@@ -2090,7 +2118,7 @@ fn scaled_migration_applies_through_action_and_checkpoint_code() {
 
     let (t, _, h, _) = chain();
     let source_mem = t.neuron(h).unwrap().state.mem();
-    let source_model = t.neuron(h).unwrap().model;
+    let source_model = t.neuron(h).unwrap().model.clone();
     let mut n = net(t);
     let mut rng = Rng64::new(1);
     let target = NeuronModel::AdEx(AdExParams::default());
@@ -2098,7 +2126,7 @@ fn scaled_migration_applies_through_action_and_checkpoint_code() {
         &mut n,
         &StructuralAction::ChangeNeuronModel {
             id: h,
-            model: target,
+            model: target.clone(),
             migration: StateMigration::Scaled,
         },
         &mut rng,
@@ -2282,7 +2310,7 @@ fn inhibitory_stdp_strengthens_when_target_is_exceeded_and_weakens_below_it() {
         n.step(&[1.0, 1.0]).unwrap();
     }
     let w = n.topology().synapse(s).unwrap().weight;
-    assert!(w < -0.1 && w >= -5.0, "{w}");
+    assert!((-5.0..-0.1).contains(&w), "{w}");
     n.topology().validate().unwrap();
 
     // Target is higher than actual frequency → inhibition is reduced to zero, but does not
@@ -2430,7 +2458,7 @@ fn checkpoint_v5_roundtrips_dale_ei_state_and_configs() {
         n.step(&[1.0, 1.0]).unwrap();
     }
     let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
-    let c = load_checkpoint(&save_checkpoint(&n, &ctl, b"")).unwrap();
+    let c = load_checkpoint(&save_checkpoint(&n, &ctl, b"").unwrap()).unwrap();
     assert!(c.network.topology().dale());
     assert_eq!(c.network.config().balance, cfg.balance);
     assert_eq!(c.network.config().inhibitory, cfg.inhibitory);
@@ -2490,8 +2518,9 @@ fn simulate_model<T: crate::scalar::Scalar>(
     steps: usize,
 ) -> usize {
     let mut state = model.init_state();
+    let ctx = crate::structural::custom::NeuronStepContext::manual(NeuronId(0), 0, 0);
     (0..steps)
-        .filter(|_| model.step(&mut state, current))
+        .filter(|_| model.step(&mut state, current, &ctx).unwrap_or(false))
         .count()
 }
 
@@ -2524,7 +2553,7 @@ fn neuron_models_run_in_f32_and_f64_with_matching_spike_counts() {
             NeuronModel::HodgkinHuxley(_) => {
                 NeuronModel::HodgkinHuxley(HodgkinHuxleyParams::default())
             }
-            NeuronModel::AdaptiveLif(_) => unreachable!(),
+            NeuronModel::AdaptiveLif(_) | NeuronModel::Custom(_) => unreachable!(),
         };
         let a = simulate_model(m32, i64_ as f32, n);
         let b = simulate_model(m64, i64_, n);
@@ -2774,7 +2803,7 @@ fn f64_net() -> (DynamicNetwork<f64>, StructuralPlasticityController<f64>) {
 #[test]
 fn f64_checkpoint_roundtrips_without_precision_loss_and_uses_version_6() {
     let (net, ctl) = f64_net();
-    let bytes = save_checkpoint(&net, &ctl, b"extra");
+    let bytes = save_checkpoint(&net, &ctl, b"extra").unwrap();
     assert_eq!(&bytes[4..8], &FORMAT_VERSION_F64.to_le_bytes());
     let back = load_checkpoint_as::<f64>(&bytes).unwrap();
     assert_eq!(back.extra, b"extra");
@@ -2784,7 +2813,7 @@ fn f64_checkpoint_roundtrips_without_precision_loss_and_uses_version_6() {
     assert_eq!(back.network.topology(), net.topology());
     // saving again gives the same bytes
     assert_eq!(
-        save_checkpoint(&back.network, &back.controller, b"extra"),
+        save_checkpoint(&back.network, &back.controller, b"extra").unwrap(),
         bytes
     );
     // f64 → f32 read with rounding
@@ -2796,7 +2825,7 @@ fn f64_checkpoint_roundtrips_without_precision_loss_and_uses_version_6() {
 }
 
 #[test]
-fn f32_checkpoint_stays_version_5_and_widens_losslessly_to_f64() {
+fn f32_checkpoint_stays_current_version_and_widens_losslessly_to_f64() {
     let mut t: Topology = Topology::new(TopologyLimits::default(), ParamLimits::default());
     let a = t
         .add_neuron(
@@ -2817,11 +2846,708 @@ fn f32_checkpoint_stays_version_5_and_widens_losslessly_to_f64() {
     t.add_synapse(a, o, 0.75, 0, Origin::Initial, b()).unwrap();
     let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
     let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
-    let bytes = save_checkpoint(&net, &ctl, b"");
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
     assert_eq!(&bytes[4..8], &FORMAT_VERSION.to_le_bytes());
     let wide = load_checkpoint_as::<f64>(&bytes).unwrap();
     assert_eq!(
         wide.network.topology().synapses().next().unwrap().weight,
         0.75f64
     );
+}
+
+// ---------------------------------------------------------------------
+// Short-term plasticity (STP, Tsodyks–Markram)
+// ---------------------------------------------------------------------
+
+fn stp_net(stp: Option<StpConfig>) -> DynamicNetwork {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut cfg = EngineConfig::default();
+    cfg.stp = stp;
+    DynamicNetwork::new(t, cfg).unwrap()
+}
+
+#[test]
+fn stp_state_facilitation_close_spikes_release_higher() {
+    // Facilitation preset: τ_fac = 50 (slow utilization revert), τ_rec = 5.
+    let cfg = StpConfig::preset(StpMode::Facilitation);
+    let mut st = StpState::new(cfg);
+    let rel: Vec<f32> = (0..3).map(|_| st.release(cfg)).collect();
+    assert!(rel[1] > rel[0] + 1e-3, "facilitation: {rel:?}");
+    assert!(rel[2] > rel[1] + 1e-3, "facilitation: {rel:?}");
+}
+
+#[test]
+fn stp_state_depression_burst_depletes_release() {
+    // Depression preset: τ_rec = 50 (slow recovery), τ_fac = 5.
+    let cfg = StpConfig::preset(StpMode::Depression);
+    let mut st = StpState::new(cfg);
+    let rel: Vec<f32> = (0..3).map(|_| st.release(cfg)).collect();
+    assert!(rel[1] < rel[0] - 1e-3, "depression: {rel:?}");
+    assert!(rel[2] < rel[1] - 1e-3, "depression: {rel:?}");
+}
+
+#[test]
+fn stp_state_baseline_return_after_pause() {
+    let cfg: StpConfig = StpConfig::preset(StpMode::Depression);
+    let mut st = StpState::new(cfg);
+    st.release(cfg); // deplete x.
+    for _ in 0..100 {
+        st.update_between(1000, cfg);
+    } // long pause
+    assert!(st.x.abs() > 0.99, "x recovered toward 1: {}", st.x);
+    assert!((st.u - cfg.u).abs() < 0.01, "u reverts toward U: {}", st.u);
+    let y: f32 = st.release(cfg);
+    assert!(
+        (y - cfg.u).abs() < 1e-3,
+        "release returns to baseline U: {y}"
+    );
+}
+
+#[test]
+fn stp_telemetry_accessors() {
+    let mut net = stp_net(Some(StpConfig::preset(StpMode::Mixed)));
+    assert_eq!(net.stp_config(), Some(StpConfig::preset(StpMode::Mixed)));
+    net.step(&[1.0]).unwrap();
+    net.step(&[1.0]).unwrap(); // first arrival happens on step 2.
+    let sid = net.topology().synapses().next().unwrap().id;
+    assert!(net.stp_state(sid).is_some());
+    assert!(net.stp_states().contains_key(&sid));
+    let mut net2 = stp_net(None);
+    assert_eq!(net2.stp_config(), None);
+    net2.set_stp(Some(StpConfig::preset(StpMode::Mixed)));
+    assert_eq!(net2.stp_config(), Some(StpConfig::preset(StpMode::Mixed)));
+    net2.set_stp(None);
+    assert_eq!(net2.stp_config(), None);
+}
+
+#[test]
+fn stp_static_mode_is_legacy_parity() {
+    // `StpMode::Static` ⇒ y ≡ 1: identical delivery to a network without STP.
+    let mut a = stp_net(Some(StpConfig::preset(StpMode::Static)));
+    let mut b = stp_net(None);
+    for _ in 0..5 {
+        a.step(&[1.0]).unwrap();
+        b.step(&[1.0]).unwrap();
+    }
+    assert_eq!(
+        a.topology().synapses().next().unwrap().weight,
+        b.topology().synapses().next().unwrap().weight
+    );
+    assert!(a.stp_states().is_empty());
+}
+
+#[test]
+fn stp_composes_with_pair_stdp() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut cfg = EngineConfig::default();
+    cfg.stdp.mode = PlasticityMode::Immediate;
+    // U = 1.0: release y ≡ 1 (no STP depression), delivery = 0.5·1 = 0.5.
+    cfg.stp = Some(StpConfig::new(StpMode::Mixed, 1.0, 10.0, 10.0));
+    let mut net = DynamicNetwork::new(t, cfg).unwrap();
+    for _ in 0..5 {
+        net.step(&[10.0]).unwrap();
+    }
+    assert_ne!(net.topology().synapses().next().unwrap().weight, 0.5);
+    assert!(!net.stp_states().is_empty());
+}
+
+#[test]
+fn stp_checkpoint_roundtrip() {
+    let mut net = stp_net(Some(StpConfig::preset(StpMode::Mixed)));
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    let sid = net.topology().synapses().next().unwrap().id;
+    let (x0, u0, rel0) = {
+        let st = net.stp_state(sid).unwrap();
+        (st.x, st.u, st.released)
+    };
+    assert!(rel0 > 0.0);
+    let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
+    let c = load_checkpoint(&bytes).unwrap();
+    let st = c.network.stp_state(sid).unwrap();
+    assert_eq!((st.x, st.u), (x0, u0));
+    assert_eq!(st.released, rel0);
+}
+
+#[test]
+fn stp_set_none_disables_and_clears() {
+    let mut net = stp_net(Some(StpConfig::preset(StpMode::Mixed)));
+    net.step(&[1.0]).unwrap();
+    net.step(&[1.0]).unwrap(); // arrival on step 2.
+    assert!(!net.stp_states().is_empty());
+    net.set_stp(None);
+    assert!(net.stp_states().is_empty());
+    assert_eq!(net.stp_config(), None);
+}
+
+// ---------------------------------------------------------------------
+// Conductance-based synapses (AMPA/NMDA/GABA) — PROMPT 3
+// ---------------------------------------------------------------------
+
+fn g_of(net: &DynamicNetwork, sid: SynapseId) -> f32 {
+    net.cond_states().get(&sid).map(|s| s.g).unwrap_or(0.0)
+}
+
+#[test]
+fn amp_pulse_decays_with_tau() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    let sid = net.topology().synapses().next().unwrap().id;
+    let g5 = g_of(&net, sid);
+    assert!(g5 > 0.0, "AMPA conductance after spikes: {g5}");
+    for _ in 0..10 {
+        net.step(&[0.0]).unwrap();
+    }
+    let g_last = g_of(&net, sid);
+    assert!(
+        g_last < g5,
+        "AMPA conductance decays between steps: {g5} -> {g_last}"
+    );
+}
+
+#[test]
+fn nmda_block_changes_with_voltage() {
+    let p = ConductanceParams::<f32>::nmda();
+    let b0 = p.nmda_block(0.0);
+    let b_half = p.nmda_block(-0.4);
+    let b_deep = p.nmda_block(-0.8);
+    assert!(b0 > b_half, "block opens at V=0: {b0} vs {b_half}");
+    assert!(
+        b_half > b_deep,
+        "block closes at V=-0.8: {b_half} vs {b_deep}"
+    );
+    assert!(b_deep < 0.01, "block nearly closed at V=-0.8: {b_deep}");
+}
+
+#[test]
+fn reversal_potential_direction_vs_voltage() {
+    let p = ConductanceParams::<f32>::amp();
+    assert_eq!(p.current(0.5, 0.0), 0.0);
+    assert!(p.current(0.5, 0.5) < 0.0);
+    assert!(p.current(0.5, -0.5) > 0.0);
+}
+
+#[test]
+fn amp_nmda_independent_states() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Nmda, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert_eq!(
+        net.cond_states().len(),
+        2,
+        "AMPA + NMDA multiedge has two independent states"
+    );
+    assert!(net.topology().validate().is_ok());
+}
+
+#[test]
+fn gaba_reduces_drive_and_dale_invariant_holds() {
+    // GABA multiedge adds negative current (I = g·(E_rev − V), E_rev < 0) on top of a
+    // legacy +0.5 current-based synapse — the target drive must decrease.
+    let drive = |with_gaba: bool| -> f32 {
+        let mut t = topo(TopologyLimits::default());
+        let i = inp(&mut t);
+        // theta high: no output spikes anywhere (compare membrane levels).
+        let o = out(&mut t, 0.9, 1.0);
+        t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap(); // legacy: +0.5 current
+        if with_gaba {
+            t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Gaba, Origin::Initial, b())
+                .unwrap();
+        }
+        let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+        net.step(&[1.0]).unwrap();
+        net.step(&[1.0]).unwrap();
+        net.topology().neuron(o).unwrap().state.mem()
+    };
+    // drive(false) = 0.5 (legacy), drive(true) = 0.5 + g·(E_rev − V) = 0.5 − 0.21.
+    assert!(
+        drive(true) < drive(false),
+        "GABA must reduce the target drive: {} vs {}",
+        drive(true),
+        drive(false)
+    );
+    assert!(ConductanceParams::<f32>::gaba().current(0.3, 0.0) < 0.0);
+}
+
+#[test]
+fn current_based_unchanged_parity() {
+    // Legacy current-based delivery: weight is the current — unchanged behavior.
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert_eq!(
+        net.topology().synapse(sid).unwrap().model,
+        SynapseModel::CurrentBased
+    );
+    assert!(!net.cond_states().contains_key(&sid));
+}
+
+#[test]
+fn conductance_f32_f64() {
+    let build = |t: &mut Topology| {
+        let i = inp(t);
+        let o = out(t, 0.9, 0.4);
+        t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+            .unwrap();
+    };
+    let mut t = topo(TopologyLimits::default());
+    build(&mut t);
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    net.step(&[1.0]).unwrap();
+    net.step(&[1.0]).unwrap(); // first arrival happens on step 2
+    assert_eq!(net.cond_states().len(), 1);
+    // f64 variant.
+    let mut t = Topology::<f64>::new(TopologyLimits::default(), ParamLimits::default());
+    let i = t
+        .add_neuron(
+            NeuronKind::Input,
+            LifParams::default(),
+            Origin::Initial,
+            b(),
+        )
+        .unwrap();
+    let o = t
+        .add_neuron(
+            NeuronKind::Output,
+            LifParams::new(0.9, 0.4),
+            Origin::Initial,
+            b(),
+        )
+        .unwrap();
+    t.add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::<f64>::default()).unwrap();
+    net.step(&[1.0]).unwrap();
+    net.step(&[1.0]).unwrap();
+    let sid = net.topology().synapses().next().unwrap().id;
+    assert_eq!(
+        net.topology().synapse(sid).unwrap().model,
+        SynapseModel::Ampa
+    );
+    assert!(net.cond_states().contains_key(&sid));
+}
+
+#[test]
+fn conductance_numeric_param_validation() {
+    assert!(ConductanceParams::<f32>::amp().validate().is_ok());
+    assert!(ConductanceParams::<f32>::nmda().validate().is_ok());
+    assert!(ConductanceParams::<f32>::gaba().validate().is_ok());
+    assert!(
+        ConductanceParams::<f32> {
+            g_peak: -0.1,
+            ..ConductanceParams::<f32>::amp()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        ConductanceParams::<f32> {
+            tau: 0.0,
+            ..ConductanceParams::<f32>::amp()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        ConductanceParams::<f32> {
+            e_rev: f32::NAN,
+            ..ConductanceParams::<f32>::amp()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        ConductanceParams::<f32> {
+            delta_v: 0.0,
+            ..ConductanceParams::<f32>::nmda()
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn conductance_checkpoint_roundtrip() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t
+        .add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    let g0 = g_of(&net, sid);
+    assert!(g0 > 0.0);
+    let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
+    let c = load_checkpoint(&bytes).unwrap();
+    assert_eq!(
+        c.network.topology().synapse(sid).unwrap().model,
+        SynapseModel::Ampa
+    );
+    assert_eq!(g_of(&c.network, sid), g0);
+}
+
+#[test]
+fn conductance_topology_mutations() {
+    // Remove → state gone.
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t
+        .add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!(net.cond_states().contains_key(&sid));
+    net.topology_mut().remove_synapse(sid).unwrap();
+    net.step(&[1.0]).unwrap(); // cond state pruned on the next step
+    assert!(!net.cond_states().contains_key(&sid));
+    // Disable → state pruned on the next step.
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t
+        .add_synapse_with_model(i, o, 0.5, 0, SynapseModel::Ampa, Origin::Initial, b())
+        .unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!(net.cond_states().contains_key(&sid));
+    net.topology_mut().disable_synapse(sid, 100).unwrap();
+    net.step(&[1.0]).unwrap();
+    assert!(!net.cond_states().contains_key(&sid));
+}
+
+// ---------------------------------------------------------------------
+// E-prop on DynamicNetwork (PROMPT 1 — verification/docs)
+// ---------------------------------------------------------------------
+
+#[test]
+fn eprop_on_dynamic_network_trains_readout() {
+    // Input→Output LIF: `EpropTrainer` drives online weight updates
+    // (`W ← W − η·d·e`) after each `net.step()` — no backprop through time.
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.4, 0, Origin::Initial, b()).unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    let mut cfg = EpropConfig::<f32>::default();
+    cfg.learning_rate = 0.1;
+    let mut trainer = EpropTrainer::new(&net, cfg).unwrap();
+    trainer.set_target(o, 1.0);
+    for _ in 0..12 {
+        net.step(&[1.0]).unwrap();
+        trainer.step(&mut net).unwrap();
+    }
+    assert_eq!(trainer.state().steps(), 12);
+    assert!(trainer.state().synapse_trace_count() > 0);
+    assert!(net.topology().synapse(sid).is_some());
+}
+
+// ---------------------------------------------------------------------
+// Learnable delays (PROMPT 5)
+// ---------------------------------------------------------------------
+
+fn ld_net(k: u16) -> (DynamicNetwork, SynapseId) {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.5, k, Origin::Initial, b()).unwrap();
+    (
+        DynamicNetwork::new(t, EngineConfig::default()).unwrap(),
+        sid,
+    )
+}
+
+fn ld_net_cfg(cfg: LearnableDelayConfig) -> DynamicNetwork {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut ec = EngineConfig::default();
+    ec.learnable_delay = Some(cfg);
+    DynamicNetwork::new(t, ec).unwrap()
+}
+
+fn ld_cfg(initial: f32, lr: f32, max: f32) -> LearnableDelayConfig {
+    LearnableDelayConfig {
+        enabled: true,
+        min_delay: 0.0,
+        max_delay: max,
+        initial,
+        learning_rate: lr,
+        elig_decay: 0.9,
+    }
+}
+
+/// Arrival step of the first spike on `sid` (scan up to 8 steps).
+fn arrival_step(net: &mut DynamicNetwork, sid: SynapseId) -> u64 {
+    for _ in 0..8 {
+        net.step(&[1.0]).unwrap();
+        if net.last_arrivals().contains(&sid) {
+            return net.step_count();
+        }
+    }
+    panic!("no arrival within 8 steps");
+}
+
+#[test]
+fn learnable_delay_integer_parity_with_legacy() {
+    for k in 0..=2u16 {
+        let (mut net, sid) = ld_net(k);
+        let legacy = arrival_step(&mut net, sid);
+        let mut net2 = ld_net_cfg(ld_cfg(k as f32, 0.0, 4.0));
+        let sid2 = net2.topology().synapses().next().unwrap().id;
+        let learnable = arrival_step(&mut net2, sid2);
+        assert_eq!(
+            legacy, learnable,
+            "integer parity for delay {k}: legacy={legacy} learnable={learnable}"
+        );
+    }
+}
+
+#[test]
+fn learnable_delay_fractional_split() {
+    let mut net = ld_net_cfg(ld_cfg(1.5, 0.0, 3.0));
+    let sid = net.topology().synapses().next().unwrap().id;
+    net.step(&[1.0]).unwrap(); // spike of the input during step 1
+    net.step(&[1.0]).unwrap(); // dispatch pass
+    assert_eq!(net.learnable_delay(sid), Some(1.5));
+    let mut due: Vec<u64> = net.frac_deliveries().keys().copied().collect();
+    due.sort_unstable();
+    assert_eq!(due.len(), 2, "two bins: {due:?}");
+    assert_eq!(due[1] - due[0], 1, "adjacent bins: {due:?}");
+    let amt: f32 = net
+        .frac_deliveries()
+        .values()
+        .flatten()
+        .map(|(_, a)| *a)
+        .sum();
+    assert!((amt - 1.0).abs() < 1e-6, "charge preserved: {amt}");
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!(net.last_arrivals().contains(&sid));
+}
+
+#[test]
+fn learnable_delay_training_moves_delay() {
+    // Positive teaching signal → delay grows.
+    let mut net = ld_net_cfg(ld_cfg(0.5, 0.1, 3.0));
+    let sid = net.topology().synapses().next().unwrap().id;
+    let o = net.topology().synapses().next().unwrap().dst;
+    net.set_teaching_signal(o, 1.0);
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!(net.learnable_delay(sid).unwrap() > 0.5 + 1e-6);
+    // Negative → shrinks toward min_delay.
+    let mut net = ld_net_cfg(ld_cfg(0.5, 0.1, 3.0));
+    let sid = net.topology().synapses().next().unwrap().id;
+    let o = net.topology().synapses().next().unwrap().dst;
+    net.set_teaching_signal(o, -1.0);
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!(net.learnable_delay(sid).unwrap() < 0.5 - 1e-6);
+    // Zero signal → unchanged.
+    let mut net = ld_net_cfg(ld_cfg(0.5, 0.1, 3.0));
+    let sid = net.topology().synapses().next().unwrap().id;
+    for _ in 0..5 {
+        net.step(&[1.0]).unwrap();
+    }
+    assert!((net.learnable_delay(sid).unwrap() - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn learnable_delay_checkpoint_roundtrip() {
+    let mut net = ld_net_cfg(ld_cfg(0.75, 0.1, 3.0));
+    let sid = net.topology().synapses().next().unwrap().id;
+    let o = net.topology().synapses().next().unwrap().dst;
+    net.set_teaching_signal(o, 0.5);
+    for _ in 0..3 {
+        net.step(&[1.0]).unwrap();
+    }
+    let d0 = net.learnable_delay(sid).unwrap();
+    assert!(d0 > 0.75);
+    let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
+    let c = load_checkpoint(&bytes).unwrap();
+    assert_eq!(c.network.learnable_delay(sid), Some(d0));
+    assert_eq!(
+        c.network.learnable_delay_elig(sid),
+        net.learnable_delay_elig(sid)
+    );
+    assert!(c.network.config().learnable_delay.is_some());
+    // Legacy (no learnable) — empty and roundtrips as `None`.
+    let (mut net2, sid2) = ld_net(1);
+    for _ in 0..2 {
+        net2.step(&[1.0]).unwrap();
+    }
+    assert!(net2.learnable_delays().is_empty());
+    let ctl2 = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
+    let bytes2 = save_checkpoint(&net2, &ctl2, b"").unwrap();
+    let c2 = load_checkpoint(&bytes2).unwrap();
+    assert_eq!(c2.network.learnable_delay(sid2), None);
+    assert!(c2.network.config().learnable_delay.is_none());
+}
+
+#[test]
+fn learnable_delay_config_validation() {
+    let mut cfg = LearnableDelayConfig::default();
+    assert!(cfg.validate().is_ok());
+    cfg.min_delay = -0.1;
+    assert!(cfg.validate().is_err());
+    cfg.min_delay = 0.0;
+    cfg.max_delay = -1.0;
+    assert!(cfg.validate().is_err());
+    cfg.max_delay = 3.0;
+    cfg.initial = 5.0;
+    assert!(cfg.validate().is_err());
+    cfg.initial = 1.5;
+    cfg.learning_rate = f32::NAN;
+    assert!(cfg.validate().is_err());
+    cfg.learning_rate = 0.05;
+    cfg.elig_decay = 1.0;
+    assert!(cfg.validate().is_err());
+    cfg.elig_decay = 0.9;
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn active_input_list_records_spikes() {
+    // Active-input lists — the canonical sparse input lists of the engine.
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    for _ in 0..4 {
+        net.step(&[1.0]).unwrap();
+    }
+    // The input spiked (fed 1.0 each step) — it is in the last active-input list.
+    let last = net.last_active_inputs();
+    assert!(last.contains(&i), "input in last_active_inputs: {last:?}");
+    // The window is bounded (like `history`) and time-ordered.
+    assert!(net.active_inputs().len() <= net.topology().param_limits().delay_max as usize + 1);
+    let steps: Vec<u64> = net.active_inputs().iter().map(|&(s, _)| s).collect();
+    assert!(
+        steps.windows(2).all(|w| w[0] <= w[1]),
+        "time-ordered: {steps:?}"
+    );
+    // Empty when nothing spiked.
+    let mut t2 = topo(TopologyLimits::default());
+    let i2 = inp(&mut t2);
+    let o2 = out(&mut t2, 0.9, 0.4);
+    t2.add_synapse(i2, o2, 0.5, 0, Origin::Initial, b())
+        .unwrap();
+    let mut net2 = DynamicNetwork::new(t2, EngineConfig::default()).unwrap();
+    for _ in 0..3 {
+        net2.step(&[0.0]).unwrap();
+    }
+    assert!(net2.last_active_inputs().is_empty());
+}
+
+#[test]
+fn synapse_binary_flag_and_setter() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    assert!(!t.synapse(sid).unwrap().binary);
+    t.set_synapse_binary(sid, true).unwrap();
+    assert!(t.synapse(sid).unwrap().binary);
+    t.set_synapse_binary(sid, false).unwrap();
+    assert!(!t.synapse(sid).unwrap().binary);
+    assert!(t.set_synapse_binary(SynapseId(999), true).is_err());
+}
+
+#[test]
+fn count_scores_counts_active_inputs() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    // Paper Eq. `c_j = Σ_{i∈Q} M_ij`: active input `i` → 1 counted synapse of `o`.
+    let scores = net.count_scores(&[i]);
+    assert_eq!(scores.get(&o), Some(&1u32));
+    assert!(net.count_scores(&[]).is_empty());
+}
+
+#[test]
+fn count_scores_skips_zero_weight_and_inactive() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    let mut net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    assert_eq!(net.count_scores(&[i]).get(&o), Some(&1u32));
+    // Zero weight → M_ij = 0.
+    net.topology_mut().set_synapse_weight(sid, 0.0).unwrap();
+    assert!(net.count_scores(&[i]).get(&o).is_none());
+    // Disabled → not counted.
+    net.topology_mut().set_synapse_weight(sid, 0.5).unwrap();
+    net.topology_mut().disable_synapse(sid, 100).unwrap();
+    net.step(&[1.0]).unwrap();
+    assert!(net.count_scores(&[i]).get(&o).is_none());
+}
+
+#[test]
+fn binary_flag_checkpoint_roundtrip() {
+    let mut t = topo(TopologyLimits::default());
+    let i = inp(&mut t);
+    let o = out(&mut t, 0.9, 0.4);
+    let sid = t.add_synapse(i, o, 0.5, 0, Origin::Initial, b()).unwrap();
+    t.set_synapse_binary(sid, true).unwrap();
+    let net = DynamicNetwork::new(t, EngineConfig::default()).unwrap();
+    let ctl = StructuralPlasticityController::new(StructuralConfig::default()).unwrap();
+    let bytes = save_checkpoint(&net, &ctl, b"").unwrap();
+    let c = load_checkpoint(&bytes).unwrap();
+    assert!(c.network.topology().synapse(sid).unwrap().binary);
+    // Legacy: no binary flags — roundtrips as `false`.
+    let mut t2 = topo(TopologyLimits::default());
+    let i2 = inp(&mut t2);
+    let o2 = out(&mut t2, 0.9, 0.4);
+    let sid2 = t2
+        .add_synapse(i2, o2, 0.5, 0, Origin::Initial, b())
+        .unwrap();
+    let net2 = DynamicNetwork::new(t2, EngineConfig::default()).unwrap();
+    let bytes2 = save_checkpoint(&net2, &ctl, b"").unwrap();
+    let c2 = load_checkpoint(&bytes2).unwrap();
+    assert!(!c2.network.topology().synapse(sid2).unwrap().binary);
 }

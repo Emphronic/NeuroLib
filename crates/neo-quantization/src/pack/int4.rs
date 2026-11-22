@@ -128,7 +128,7 @@ mod tests {
         let packed = quantize_int4(&data, ScaleGranularity::PerTensor, 0);
         for i in 0..data.len() {
             let c = packed.get_code(i);
-            assert!(c >= -8 && c <= 7, "code out of range: {c}");
+            assert!((-8..=7).contains(&c), "code out of range: {c}");
         }
     }
 
